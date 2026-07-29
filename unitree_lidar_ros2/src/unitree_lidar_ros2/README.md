@@ -2,8 +2,10 @@
 
 ROS 2 driver for the Unitree LiDAR L2.
 
-Tested against **ROS 2 Jazzy** (Ubuntu 24.04) and built against **Kilted** and
-**Rolling / Lyrical** in CI. Also builds on Humble.
+Built, tested and smoke run against **Humble**, **Jazzy** (the primary target),
+**Kilted** and **Rolling** - the development line that becomes **Lyrical** - with
+no compiler warnings on any of them. CI covers all four; Jazzy is the one that
+gates the build.
 
 ## Topics
 

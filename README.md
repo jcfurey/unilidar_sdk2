@@ -255,8 +255,8 @@ The only dependency is `ROS 2` itself. The driver no longer needs `PCL`.
 This package is tested against:
 - `Ubuntu 24.04` with `ROS 2 Jazzy`
 
-and is built in CI against `Kilted` and `Rolling` (the development line that
-becomes `Lyrical`). It also builds on `Humble`.
+and is also built and tested in CI on `Humble`, `Kilted` and `Rolling` (the
+development line that becomes `Lyrical`, on Ubuntu 26.04 with CMake 4).
 
 ### 5.2 Configuration
 

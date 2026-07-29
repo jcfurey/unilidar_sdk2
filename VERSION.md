@@ -107,6 +107,13 @@ Prepares the SDK and the ROS 2 driver for ROS 2 Jazzy and Lyrical.
 - `launch.py` uses the package share directory instead of shelling out to
   `ros2 pkg prefix`, and takes `config_file`, `rviz`, `rviz_config`, `namespace`,
   `use_sim_time` and `log_level` arguments.
+- Include tf2_ros's `.hpp` headers where they exist. The `.h` shims are deprecated
+  from Rolling onwards and warn on every build; Humble only ships the `.h` form,
+  so the choice is made with `__has_include`.
+- Pass `USE_SCOPED_HEADER_INSTALL_DIR` to `ament_auto_package()`, which installs
+  headers to `include/unitree_lidar_ros2/`. That becomes the default in Kilted, so
+  asking for it keeps the layout the same on every distribution.
+- Builds warning free and passes its tests on Humble, Jazzy, Kilted and Rolling.
 
 ### Known SDK limitations
 - `closeUDP()` and `closeSerial()` recurse without bound inside

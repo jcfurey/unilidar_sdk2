@@ -253,7 +253,7 @@ roslaunch unitree_lidar_ros run.launch
 - `Ubuntu 24.04`
 - `ROS 2 Jazzy`
 
-并且在CI中针对`Kilted`和`Rolling`（即之后的`Lyrical`开发分支）进行了编译验证。该包也可以在`Humble`上编译。
+同时也在CI中针对`Humble`、`Kilted`和`Rolling`（即之后的`Lyrical`开发分支，基于Ubuntu 26.04和CMake 4）完成了编译与测试。
 
 ### 5.2 配置
 

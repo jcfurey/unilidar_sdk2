@@ -116,10 +116,15 @@ if(BUILD_TESTING)
   endif()
 endif()
 
+# USE_SCOPED_HEADER_INSTALL_DIR installs headers to include/unitree_lidar_ros2/
+# rather than include/. That becomes the default in Kilted, and asking for it here
+# keeps the layout identical on Jazzy instead of relying on the older default.
+#
 # INSTALL_TO_SHARE puts the directories under share/unitree_lidar_ros2/, which is
 # where get_package_share_directory() and `ros2 launch` look for them.
-ament_auto_package(INSTALL_TO_SHARE
-  config
-  launch
-  rviz
+ament_auto_package(USE_SCOPED_HEADER_INSTALL_DIR
+  INSTALL_TO_SHARE
+    config
+    launch
+    rviz
 )

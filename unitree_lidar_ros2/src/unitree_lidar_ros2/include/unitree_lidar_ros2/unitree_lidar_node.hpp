@@ -18,8 +18,16 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
+// tf2_ros renamed its headers to .hpp. The .h shims warn on every build from
+// Rolling (Lyrical) onwards and are slated for removal, while Humble only ships
+// the .h form, so pick whichever the installed tf2_ros provides.
+#if __has_include(<tf2_ros/static_transform_broadcaster.hpp>)
+#include <tf2_ros/static_transform_broadcaster.hpp>
+#include <tf2_ros/transform_broadcaster.hpp>
+#else
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
+#endif
 
 // SDK. Included through the plain C++ interface only: this driver deliberately
 // does not use unitree_lidar_sdk_pcl.h, so the package does not depend on PCL.

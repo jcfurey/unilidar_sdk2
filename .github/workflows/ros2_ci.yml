@@ -3,6 +3,10 @@ name: ROS 2 build
 # Builds and tests unitree_lidar_ros2 on the ROS 2 releases this repository
 # supports. `rolling` is the development line that becomes Lyrical, so a failure
 # there is an early warning rather than a broken release.
+#
+# Note the steps below use `set -ex` and never `set -u`: ROS's setup.bash reads
+# AMENT_TRACE_SETUP_FILES and other variables without a default, so `set -u`
+# aborts the step the moment it is sourced.
 on:
   push:
     branches: ['**']
@@ -24,6 +28,8 @@ jobs:
             required: false
           - distro: rolling
             required: false
+          - distro: humble
+            required: false
     continue-on-error: ${{ !matrix.required }}
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +37,7 @@ jobs:
       - name: Install build dependencies
         shell: bash
         run: |
-          set -eux
+          set -ex
           apt-get update
           rosdep update --rosdistro "$ROS_DISTRO"
           rosdep install --from-paths unitree_lidar_ros2/src --ignore-src -y \
@@ -41,7 +47,7 @@ jobs:
         shell: bash
         working-directory: unitree_lidar_ros2
         run: |
-          set -eux
+          set -ex
           source "/opt/ros/$ROS_DISTRO/setup.bash"
           colcon build --event-handlers console_direct+ \
             --cmake-args -DCMAKE_BUILD_TYPE=Release -Wno-dev
@@ -50,7 +56,7 @@ jobs:
         shell: bash
         working-directory: unitree_lidar_ros2
         run: |
-          set -eux
+          set -ex
           source "/opt/ros/$ROS_DISTRO/setup.bash"
           colcon test --event-handlers console_direct+ --return-code-on-test-failure
 
@@ -58,7 +64,7 @@ jobs:
         shell: bash
         working-directory: unitree_lidar_ros2
         run: |
-          set -eux
+          set -ex
           source install/setup.bash
           # No lidar on a CI runner, so bind to loopback and just confirm the
           # driver comes up, advertises, and shuts down on SIGINT without hanging.
@@ -114,6 +120,6 @@ jobs:
         shell: bash
         working-directory: unitree_lidar_sdk
         run: |
-          set -eux
+          set -ex
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j"$(nproc)"
