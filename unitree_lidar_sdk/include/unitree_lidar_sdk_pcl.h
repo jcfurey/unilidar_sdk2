@@ -39,9 +39,17 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+#include <cstdint>
+
 #include "unitree_lidar_sdk.h"
 
-using namespace unilidar_sdk2;
+// Pulling a whole namespace into the global one from a header leaks into every
+// translation unit that includes it. It is kept for backwards compatibility -
+// define UNILIDAR_SDK_PCL_NO_GLOBAL_NAMESPACE before including this header to
+// opt out and qualify the SDK types explicitly instead.
+#ifndef UNILIDAR_SDK_PCL_NO_GLOBAL_NAMESPACE
+using namespace unilidar_sdk2;  // NOLINT(build/namespaces)
+#endif
 
 /**
  * @brief PCL Point Type
@@ -66,19 +74,33 @@ PCL_INSTANTIATE(RadiusOutlierRemoval, PointType)
  *
  * @param cloudIn
  * @param cloudOut
+ *
+ * @note This has to be `inline`: without it, including this header from more
+ * than one translation unit makes the link fail with a duplicate definition.
  */
-void transformUnitreeCloudToPCL(const PointCloudUnitree &cloudIn, pcl::PointCloud<PointType>::Ptr cloudOut)
+inline void transformUnitreeCloudToPCL(const PointCloudUnitree &cloudIn, pcl::PointCloud<PointType>::Ptr cloudOut)
 {
+    const size_t num_points = cloudIn.points.size();
+
+    // Size the cloud once instead of growing it one point at a time.
     cloudOut->clear();
-    PointType pt;
-    for (size_t i = 0; i < cloudIn.points.size(); i++)
+    cloudOut->resize(num_points);
+    cloudOut->width = static_cast<std::uint32_t>(num_points);
+    cloudOut->height = 1;
+    cloudOut->is_dense = true;
+
+    for (size_t i = 0; i < num_points; i++)
     {
+        PointType &pt = cloudOut->points[i];
         pt.x = cloudIn.points[i].x;
         pt.y = cloudIn.points[i].y;
         pt.z = cloudIn.points[i].z;
         pt.intensity = cloudIn.points[i].intensity;
         pt.time = cloudIn.points[i].time;
-        pt.ring = cloudIn.points[i].ring;
-        cloudOut->push_back(pt);
+        pt.ring = static_cast<std::uint16_t>(cloudIn.points[i].ring);
+        // PCL keeps a homogeneous coordinate in the 4th slot of the XYZ block and
+        // several of its Eigen based algorithms expect it to be 1. It used to be
+        // left holding whatever was on the stack.
+        pt.data[3] = 1.0f;
     }
 }

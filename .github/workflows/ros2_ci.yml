@@ -1,0 +1,119 @@
+name: ROS 2 build
+
+# Builds and tests unitree_lidar_ros2 on the ROS 2 releases this repository
+# supports. `rolling` is the development line that becomes Lyrical, so a failure
+# there is an early warning rather than a broken release.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  colcon:
+    name: ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    container: ros:${{ matrix.distro }}-ros-base
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: jazzy
+            required: true
+          - distro: kilted
+            required: false
+          - distro: rolling
+            required: false
+    continue-on-error: ${{ !matrix.required }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -eux
+          apt-get update
+          rosdep update --rosdistro "$ROS_DISTRO"
+          rosdep install --from-paths unitree_lidar_ros2/src --ignore-src -y \
+            --rosdistro "$ROS_DISTRO"
+
+      - name: Build
+        shell: bash
+        working-directory: unitree_lidar_ros2
+        run: |
+          set -eux
+          source "/opt/ros/$ROS_DISTRO/setup.bash"
+          colcon build --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -Wno-dev
+
+      - name: Test
+        shell: bash
+        working-directory: unitree_lidar_ros2
+        run: |
+          set -eux
+          source "/opt/ros/$ROS_DISTRO/setup.bash"
+          colcon test --event-handlers console_direct+ --return-code-on-test-failure
+
+      - name: Check the node starts and advertises its topics
+        shell: bash
+        working-directory: unitree_lidar_ros2
+        run: |
+          set -eux
+          source install/setup.bash
+          # No lidar on a CI runner, so bind to loopback and just confirm the
+          # driver comes up, advertises, and shuts down on SIGINT without hanging.
+          # The executable is launched directly rather than through `ros2 run` so
+          # that the signal reaches the node itself.
+          install/unitree_lidar_ros2/lib/unitree_lidar_ros2/unitree_lidar_ros2_node \
+            --ros-args \
+            -p local_ip:=127.0.0.1 -p lidar_ip:=127.0.0.1 \
+            -p start_rotation_on_startup:=false -p set_work_mode:=false &
+          node_pid=$!
+
+          # Discovery can take a moment in a container, so poll rather than
+          # assuming a fixed delay is enough.
+          found=""
+          for _ in $(seq 1 12); do
+            sleep 5
+            kill -0 "$node_pid" 2>/dev/null || { echo "node exited early" >&2; wait "$node_pid"; exit 1; }
+            ros2 topic list > /tmp/topics 2>/dev/null || true
+            if grep -q '/unilidar/cloud' /tmp/topics &&
+               grep -q '/unilidar/imu' /tmp/topics &&
+               grep -q '/unilidar/laserscan' /tmp/topics; then
+              found=yes
+              break
+            fi
+          done
+          cat /tmp/topics
+          test -n "$found"
+
+          kill -INT "$node_pid"
+          # Must exit on its own: the reader thread is joined, not detached. Allow
+          # for the SDK's one second socket receive timeout.
+          for _ in $(seq 1 15); do
+            kill -0 "$node_pid" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$node_pid" 2>/dev/null; then
+            echo "node did not shut down within 15 s" >&2
+            kill -9 "$node_pid" || true
+            exit 1
+          fi
+
+  sdk:
+    name: sdk (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the SDK examples
+        shell: bash
+        working-directory: unitree_lidar_sdk
+        run: |
+          set -eux
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"

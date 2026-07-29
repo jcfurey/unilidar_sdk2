@@ -1,0 +1,15 @@
+# C++ / CMake
+build/
+bin/
+*.o
+*.so
+*.pyc
+__pycache__/
+
+# colcon / ament
+install/
+log/
+.colcon_*
+
+# catkin (ROS 1)
+devel/

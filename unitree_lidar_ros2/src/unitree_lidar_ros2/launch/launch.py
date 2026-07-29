@@ -1,49 +1,87 @@
-import os
-import subprocess
+# **********************************************************************
+#  Copyright (c) 2020-2024, Unitree Robotics.Co.Ltd. All rights reserved.
+# **********************************************************************
+"""Bring up the Unitree L2 lidar driver, and rviz2 to look at it.
+
+Every setting lives in config/unilidar_l2.yaml. Override the file, or individual
+parameters, from the command line::
+
+    ros2 launch unitree_lidar_ros2 launch.py
+    ros2 launch unitree_lidar_ros2 launch.py rviz:=false
+    ros2 launch unitree_lidar_ros2 launch.py config_file:=/path/to/my.yaml
+    ros2 launch unitree_lidar_ros2 launch.py log_level:=debug
+"""
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+
 
 def generate_launch_description():
-    # Run unitree lidar
-    node1 = Node(
+    package_share = FindPackageShare('unitree_lidar_ros2')
+
+    arguments = [
+        DeclareLaunchArgument(
+            'config_file',
+            default_value=PathJoinSubstitution([package_share, 'config', 'unilidar_l2.yaml']),
+            description='Parameter file for the lidar driver.',
+        ),
+        DeclareLaunchArgument(
+            'rviz',
+            default_value='true',
+            description='Also start rviz2.',
+        ),
+        DeclareLaunchArgument(
+            'rviz_config',
+            default_value=PathJoinSubstitution([package_share, 'rviz', 'view.rviz']),
+            description='rviz2 configuration file.',
+        ),
+        DeclareLaunchArgument(
+            'namespace',
+            default_value='',
+            description='Namespace to push the driver into.',
+        ),
+        DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Take time from /clock. Forces timestamp_source to "ros".',
+        ),
+        DeclareLaunchArgument(
+            'log_level',
+            default_value='info',
+            description='Logger level for the driver.',
+        ),
+    ]
+
+    use_sim_time = LaunchConfiguration('use_sim_time')
+
+    lidar_node = Node(
         package='unitree_lidar_ros2',
         executable='unitree_lidar_ros2_node',
         name='unitree_lidar_ros2_node',
+        namespace=LaunchConfiguration('namespace'),
         output='screen',
-        parameters= [
-                
-                {'initialize_type': 2},
-                {'work_mode': 0},
-                {'use_system_timestamp': True},
-                {'range_min': 0.0},
-                {'range_max': 100.0},
-                {'cloud_scan_num': 18},
-
-                {'serial_port': '/dev/ttyACM0'},
-                {'baudrate': 4000000},
-
-                {'lidar_port': 6101},
-                {'lidar_ip': '192.168.1.62'},
-                {'local_port': 6201},
-                {'local_ip': '192.168.1.2'},
-                
-                {'cloud_frame': "unilidar_lidar"},
-                {'cloud_topic': "unilidar/cloud"},
-                {'imu_frame': "unilidar_imu"},
-                {'imu_topic': "unilidar/imu"},
-                ]
+        # Without this, log lines from the driver are buffered when the output is
+        # not a terminal.
+        emulate_tty=True,
+        parameters=[
+            LaunchConfiguration('config_file'),
+            {'use_sim_time': use_sim_time},
+        ],
+        arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
     )
 
-    # Run Rviz
-    package_path = subprocess.check_output(['ros2', 'pkg', 'prefix', 'unitree_lidar_ros2']).decode('utf-8').rstrip()
-    rviz_config_file = os.path.join(package_path, 'share', 'unitree_lidar_ros2', 'view.rviz')
-    print("rviz_config_file = " + rviz_config_file)
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', rviz_config_file],
-        output='log'
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='log',
+        condition=IfCondition(LaunchConfiguration('rviz')),
     )
-    return LaunchDescription([node1, rviz_node])
+
+    return LaunchDescription(arguments + [lidar_node, rviz_node])

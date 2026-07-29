@@ -4,7 +4,7 @@
 
 #include "example.h"
 
-int main(int argc, char *argv[])
+int main()
 {
 
     // Initialize
@@ -29,7 +29,7 @@ int main(int argc, char *argv[])
     sleep(1);
 
     // Set lidar ip address
-    LidarIpAddressConfig config;
+    LidarIpAddressConfig config{};
     config.lidar_ip[0] = 192;
     config.lidar_ip[1] = 168;
     config.lidar_ip[2] = 123;

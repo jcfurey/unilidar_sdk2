@@ -18,15 +18,17 @@ typedef unsigned __int64 uint64_t;
 #include <stdint.h>
 #endif
 
-#include <iostream>
+#include <algorithm>
+#include <cstddef>
+#include <ctime>
+#include <deque>
 #include <fstream>
 #include <iomanip>
-#include <unistd.h>
-#include <deque>
-#include <vector>
-#include <memory>
-#include <math.h>
 #include <iostream>
+#include <math.h>
+#include <memory>
+#include <unistd.h>
+#include <vector>
 
 #include "unitree_lidar_sdk_config.h"
 #include "unitree_lidar_protocol.h"
@@ -133,7 +135,12 @@ inline void parseFromPacketToPointCloud(
     )
 {
     // scan info
-    const int num_of_points = packet.data.point_num;
+    //
+    // point_num is taken straight from the wire, so it is clamped against the
+    // capacity of the ranges/intensities arrays. A corrupted or truncated packet
+    // would otherwise make the loop below read past the end of the packet.
+    const size_t max_points = sizeof(packet.data.ranges) / sizeof(packet.data.ranges[0]);
+    const size_t num_of_points = std::min<size_t>(packet.data.point_num, max_points);
     const float time_step = packet.data.time_increment;
     const float scan_period = packet.data.scan_period;
 
@@ -157,7 +164,7 @@ inline void parseFromPacketToPointCloud(
     cloud.id = 1;
     cloud.ringNum = 1;
     cloud.points.clear();
-    cloud.points.reserve(300);
+    cloud.points.reserve(num_of_points);
 
     // transform raw data to a pointcloud
     auto &ranges = packet.data.ranges;
@@ -177,7 +184,7 @@ inline void parseFromPacketToPointCloud(
     point3d.ring = 1;
     // std::cout << "packet.data.param.range_scale = " << packet.data.param.range_scale << std::endl;
 
-    for (int j = 0; j < num_of_points; j += 1, alpha_cur += alpha_step,
+    for (size_t j = 0; j < num_of_points; j += 1, alpha_cur += alpha_step,
              theta_cur += theta_step, time_relative += time_step)
     {
         // jump invalid points
@@ -238,7 +245,9 @@ inline void parseFromPacketPointCloud2D(
     float range_max = 100)
 {
     // scan info
-    const int num_of_points = packet.data.point_num;
+    // See parseFromPacketToPointCloud() for why point_num is clamped.
+    const size_t max_points = sizeof(packet.data.ranges) / sizeof(packet.data.ranges[0]);
+    const size_t num_of_points = std::min<size_t>(packet.data.point_num, max_points);
     const float time_step = packet.data.time_increment;
     const float scan_period = packet.data.scan_period;
 
@@ -252,7 +261,7 @@ inline void parseFromPacketPointCloud2D(
     cloud.id = 1;
     cloud.ringNum = 1;
     cloud.points.clear();
-    cloud.points.reserve(300);
+    cloud.points.reserve(num_of_points);
 
     // transform raw data to a pointcloud
     auto &ranges = packet.data.ranges;
@@ -268,7 +277,7 @@ inline void parseFromPacketPointCloud2D(
     PointUnitree point3d;
     point3d.ring = 1;
 
-    for (int j = 0; j < num_of_points; j += 1, alpha_cur += alpha_step, time_relative += time_step)
+    for (size_t j = 0; j < num_of_points; j += 1, alpha_cur += alpha_step, time_relative += time_step)
     {
         // jump invalid points
         if (ranges[j] < 1)

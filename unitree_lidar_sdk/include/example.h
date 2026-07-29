@@ -4,11 +4,14 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cstdio>
+
 #include "unitree_lidar_sdk.h"
 
 using namespace unilidar_sdk2;
 
-void exampleProcess(UnitreeLidarReader *lreader){
+inline void exampleProcess(UnitreeLidarReader *lreader){
 
     // Get lidar version
     std::string versionSDK;
@@ -67,7 +70,9 @@ void exampleProcess(UnitreeLidarReader *lreader){
             {
                 printf("An IMU msg is parsed!\n");
                 std::cout << std::setprecision(20) << "\tsystem stamp = " << getSystemTimeStamp() << std::endl;
-                printf("\tseq = %d, stamp = %d.%d\n", imu.info.seq, imu.info.stamp.sec, imu.info.stamp.nsec);
+                // The nanosecond field has to be zero padded, otherwise a stamp
+                // such as 1.004411172 is printed as "1.4411172".
+                printf("\tseq = %u, stamp = %u.%09u\n", imu.info.seq, imu.info.stamp.sec, imu.info.stamp.nsec);
 
                 printf("\tquaternion (x, y, z, w) = [%.4f, %.4f, %.4f, %.4f]\n",
                        imu.quaternion[0],
@@ -91,12 +96,17 @@ void exampleProcess(UnitreeLidarReader *lreader){
             if (lreader->getPointCloud(cloud))
             {
                 printf("A Cloud msg is parsed! \n");
-                printf("\tstamp = %f, id = %d\n", cloud.stamp, cloud.id);
-                printf("\tcloud size  = %ld, ringNum = %d\n", cloud.points.size(), cloud.ringNum);
+                printf("\tstamp = %f, id = %u\n", cloud.stamp, cloud.id);
+                printf("\tcloud size  = %zu, ringNum = %u\n", cloud.points.size(), cloud.ringNum);
                 printf("\tfirst 10 points (x,y,z,intensity,time,ring) = \n");
-                for (int i = 0; i < 10; i++)
+                // Never index past the end: a scan can legitimately contain
+                // fewer than 10 valid points, for example when the lidar faces
+                // an open space or every return is filtered out by the range
+                // limits.
+                const size_t num_printed = std::min<size_t>(cloud.points.size(), 10);
+                for (size_t i = 0; i < num_printed; i++)
                 {
-                    printf("\t  (%f, %f, %f, %f, %f, %d)\n",
+                    printf("\t  (%f, %f, %f, %f, %f, %u)\n",
                            cloud.points[i].x,
                            cloud.points[i].y,
                            cloud.points[i].z,

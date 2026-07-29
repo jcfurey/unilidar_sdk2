@@ -1,0 +1,87 @@
+####################################################
+# Unitree LiDAR L2 - ROS 2 driver configuration
+#
+# The `/**` wildcard applies these values whatever the node is named or
+# namespaced as, so remapping the node does not silently drop the config.
+#
+# Every parameter here is declared read-only: they are read once while the
+# connection to the lidar is opened. Run `ros2 param describe
+# /unitree_lidar_ros2_node <name>` for the full description of each one.
+####################################################
+/**:
+  ros__parameters:
+
+    # --- Connection -------------------------------------------------------
+    # 1 = serial port, 2 = UDP / ethernet (factory default).
+    initialize_type: 2
+
+    # Bitfield stored in the lidar: bit 0 wide FOV, bit 1 2D mode, bit 2
+    # disable IMU, bit 3 serial instead of ethernet, bit 4 wait for a start
+    # command after power on. 0 is the common ethernet + 3D + IMU setup.
+    work_mode: 0
+    # The lidar keeps work_mode across power cycles. Set this to false to leave
+    # whatever is already programmed into the device alone.
+    set_work_mode: true
+
+    # Serial, used when initialize_type is 1.
+    serial_port: "/dev/ttyACM0"
+    baudrate: 4000000
+
+    # Ethernet, used when initialize_type is 2. The lidar ships on
+    # 192.168.1.62 and expects this host to be 192.168.1.2.
+    lidar_ip: "192.168.1.62"
+    lidar_port: 6101
+    local_ip: "192.168.1.2"
+    local_port: 6201
+
+    # --- Data -------------------------------------------------------------
+    # Scan lines accumulated into one published cloud.
+    cloud_scan_num: 18
+    # Returns outside this window, in metres, are dropped.
+    range_min: 0.0
+    range_max: 100.0
+
+    # --- Time -------------------------------------------------------------
+    # Stamp clouds with this host's clock rather than the lidar's own clock.
+    use_system_timestamp: true
+    # "sensor" publishes the stamp carried by the data, "ros" stamps messages
+    # from the node clock on reception. Forced to "ros" under use_sim_time.
+    timestamp_source: "sensor"
+
+    # --- Topics and frames ------------------------------------------------
+    cloud_topic: "unilidar/cloud"
+    cloud_frame: "unilidar_lidar"
+
+    imu_topic: "unilidar/imu"
+    imu_frame: "unilidar_imu"
+
+    # Only published when the lidar runs in 2D mode (work_mode bit 1).
+    laserscan_topic: "unilidar/laserscan"
+    laserscan_frame: "unilidar_laserscan"
+
+    # --- Transforms -------------------------------------------------------
+    # Broadcast <imu_frame>_initial -> <imu_frame> from the IMU orientation.
+    publish_imu_tf: true
+    # Broadcast the static <imu_frame> -> <cloud_frame> mounting offset once,
+    # on a latched topic.
+    publish_static_tf: true
+    # Origin of the cloud frame expressed in the IMU frame, in metres.
+    imu_to_lidar_translation: [0.007698, 0.014655, -0.00667]
+
+    # --- Lifecycle --------------------------------------------------------
+    # Needed when the lidar is configured to power up in standby (work_mode
+    # bit 4).
+    start_rotation_on_startup: true
+    stop_rotation_on_shutdown: false
+
+    # --- QoS and tuning ---------------------------------------------------
+    # "default" is reliable, "sensor_data" is best effort. Note a reliable
+    # subscriber never matches a best effort publisher.
+    qos_profile: "default"
+    qos_depth: 10
+
+    # How long the reader thread sleeps when no packet was waiting, in
+    # microseconds. 0 spins on the CPU instead.
+    idle_sleep_us: 100
+    # Warn when no packet arrives for this long, in seconds. 0 disables.
+    watchdog_timeout: 3.0

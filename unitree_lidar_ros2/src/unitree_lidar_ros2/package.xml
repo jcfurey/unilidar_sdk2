@@ -2,25 +2,26 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>unitree_lidar_ros2</name>
-  <version>0.0.0</version>
-  <description>unitree lidar ros2</description>
+  <version>2.0.11</version>
+  <description>ROS 2 driver for the Unitree LiDAR L2: publishes point cloud, IMU and 2D scan data.</description>
   <maintainer email="lukelbmeng@gmail.com">jo</maintainer>
   <license>GPLv3</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
-
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <buildtool_depend>ament_cmake_auto</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>std_msgs</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rcl_interfaces</depend>
   <depend>sensor_msgs</depend>
-  
-  <depend>pcl_conversions</depend>
-  <depend>pcl</depend>
-
   <depend>geometry_msgs</depend>
   <depend>tf2_ros</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

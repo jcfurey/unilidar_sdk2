@@ -247,24 +247,25 @@ roslaunch unitree_lidar_ros run.launch
 
 ### 5.1 依赖
 
-依赖项包括`PCL`和`ROS2`。
+唯一的依赖项是`ROS 2`本身，驱动不再需要`PCL`。
 
 我们已经验证这个包可以在以下环境中成功运行：
-- `Ubuntu 20.04` 
-- `ROS2 foxy`
-- `PCL-1.10`
-- `unitree_lidar_sdk`
+- `Ubuntu 24.04`
+- `ROS 2 Jazzy`
 
-建议您配置类似这样的环境来运行这个包。
+并且在CI中针对`Kilted`和`Rolling`（即之后的`Lyrical`开发分支）进行了编译验证。该包也可以在`Humble`上编译。
 
 ### 5.2 配置
 
 默认的激光雷达通信方式为网口模式，如果您需要修改工作模式，您需要修改配置文件中的对应参数。配置文件路径为：
 ```
-unitree_lidar_ros2/src/unitree_lidar_ros2/launch/launch.py
+unitree_lidar_ros2/src/unitree_lidar_ros2/config/unilidar_l2.yaml
 ```
 
-如果您有特殊需求，例如更改云话题名称或IMU话题名称，您也可以在配置文件中进行配置。
+该文件中对每一个参数都有说明，您也可以在运行时查看：
+```bash
+ros2 param describe /unitree_lidar_ros2_node <参数名>
+```
 
 默认的云话题及其坐标系名称是：
 - 话题名称："unilidar/cloud"
@@ -274,12 +275,16 @@ unitree_lidar_ros2/src/unitree_lidar_ros2/launch/launch.py
 - 话题名称："unilidar/imu"
 - 坐标系："unilidar_imu"
 
+当激光雷达工作在2D模式时，还会发布一个`sensor_msgs/LaserScan`话题：
+- 话题名称："unilidar/laserscan"
+- 坐标系："unilidar_laserscan"
+
 ### 5.3 编译
 
 编译：
 
 ```
-cd unilidar_sdk/unitree_lidar_ros2
+cd unilidar_sdk2/unitree_lidar_ros2
 
 colcon build
 ```
@@ -293,9 +298,18 @@ source install/setup.bash
 ros2 launch unitree_lidar_ros2 launch.py
 ```
 
+常用的launch参数：
+```bash
+ros2 launch unitree_lidar_ros2 launch.py rviz:=false
+ros2 launch unitree_lidar_ros2 launch.py config_file:=/path/to/my.yaml
+ros2 launch unitree_lidar_ros2 composed_launch.py   # 在组件容器中运行
+```
+
 在Rviz窗口中，你将看到我们的激光雷达点云如下：
 
 ![img](./docs/ros2_cloud.png)
+
+该驱动同时也是一个可组合节点（`unitree_lidar_ros2::UnitreeLidarNode`），因此它可以和点云的使用方运行在同一个进程中，从而省去每一帧点云的一次拷贝。完整的参数列表以及预编译SDK的已知限制，请参见[软件包的README](./unitree_lidar_ros2/src/unitree_lidar_ros2/README.md)。
 
 ## 6. 如何解析原始数据包
 

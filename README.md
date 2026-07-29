@@ -250,24 +250,25 @@ In the Rviz window, you will see our LiDAR point cloud as follows:
 
 ### 5.1 Dependencies
 
-Dependencies include `PCL` and `ROS2`.
+The only dependency is `ROS 2` itself. The driver no longer needs `PCL`.
 
-We have verified that this package can successfully run in the following environment:
-- `Ubuntu 20.04`
-- `ROS2 foxy`
-- `PCL-1.10`
-- `unitree_lidar_sdk`
+This package is tested against:
+- `Ubuntu 24.04` with `ROS 2 Jazzy`
 
-It is recommended that you configure an environment like this to run the package.
+and is built in CI against `Kilted` and `Rolling` (the development line that
+becomes `Lyrical`). It also builds on `Humble`.
 
 ### 5.2 Configuration
 
-The default communication method for the LiDAR is Ethernet mode. If you need to modify the working mode, you need to change the corresponding parameters in the configuration file. The path to the configuration file is:
+The default communication method for the LiDAR is Ethernet mode. If you need to modify the working mode, change the corresponding parameters in the configuration file:
 ```
-unitree_lidar_ros2/src/unitree_lidar_ros2/launch/launch.py
+unitree_lidar_ros2/src/unitree_lidar_ros2/config/unilidar_l2.yaml
 ```
 
-If you have special needs, such as changing the cloud topic name or IMU topic name, you can also configure them in the configuration file.
+Every parameter is documented in that file, and at run time with:
+```bash
+ros2 param describe /unitree_lidar_ros2_node <parameter>
+```
 
 The default cloud topic and its coordinate system name are:
 - Topic name: "unilidar/cloud"
@@ -277,12 +278,16 @@ The default IMU topic and its coordinate system name are:
 - Topic name: "unilidar/imu"
 - Coordinate system: "unilidar_imu"
 
+When the LiDAR runs in 2D mode, a `sensor_msgs/LaserScan` is published as well:
+- Topic name: "unilidar/laserscan"
+- Coordinate system: "unilidar_laserscan"
+
 ### 5.3 Compilation
 
 Compile:
 
 ```bash
-cd unilidar_sdk/unitree_lidar_ros2
+cd unilidar_sdk2/unitree_lidar_ros2
 
 colcon build
 ```
@@ -297,9 +302,23 @@ source install/setup.bash
 ros2 launch unitree_lidar_ros2 launch.py
 ```
 
+Useful launch arguments:
+
+```bash
+ros2 launch unitree_lidar_ros2 launch.py rviz:=false
+ros2 launch unitree_lidar_ros2 launch.py config_file:=/path/to/my.yaml
+ros2 launch unitree_lidar_ros2 composed_launch.py   # inside a component container
+```
+
 In the Rviz window, you will see our LiDAR point cloud as follows:
 
 ![img](./docs/ros2_cloud.png)
+
+The driver is also available as a composable node
+(`unitree_lidar_ros2::UnitreeLidarNode`), so it can share a process - and
+therefore skip a copy of every scan - with whatever consumes the point cloud.
+See [the package README](./unitree_lidar_ros2/src/unitree_lidar_ros2/README.md)
+for the full parameter list and for the known limitations of the pre-built SDK.
 
 ## 6. How to Parse Raw Data Packets
 

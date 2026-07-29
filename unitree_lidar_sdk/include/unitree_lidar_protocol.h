@@ -9,6 +9,12 @@
 #include <stdint.h>
 #include <string.h>
 
+// The byte sizes quoted for each struct below are the sizes these definitions
+// actually have on the platforms the pre-built library is compiled for, and they
+// are asserted at the bottom of this header. Because the packets are parsed by
+// overlaying these structs on the received bytes, changing a member - or its
+// order - silently breaks the wire format.
+
 #ifndef __EXTERN_C__
 namespace unilidar_sdk2{
 #endif
@@ -150,7 +156,7 @@ typedef struct
 
 /**
  * @brief Lidar Point Data
- * @note 1012 bytes
+ * @note 1020 bytes
  */
 typedef struct 
 {
@@ -179,7 +185,7 @@ typedef struct
 
 /**
  * @brief Lidar Point Data Packet
- * @note 1036 bytes
+ * @note 1044 bytes
  */
 typedef struct
 {
@@ -194,7 +200,7 @@ typedef struct
 
 /**
  * @brief Lidar 2D Point Data
- * @note 5504 bytes
+ * @note 5512 bytes
  */
 typedef struct 
 {
@@ -220,8 +226,8 @@ typedef struct
 }Lidar2DPointData;
 
 /**
- * @brief Lidar Point Data Packet
- * @note 5528 bytes
+ * @brief Lidar 2D Point Data Packet
+ * @note 5536 bytes
  */
 typedef struct
 {
@@ -252,7 +258,7 @@ typedef struct
 
 /**
  * @brief Lidar IMU Data
- * @note 132 bytes
+ * @note 56 bytes
  */
 typedef struct 
 {
@@ -264,7 +270,7 @@ typedef struct
 
 /**
  * @brief Lidar IMU Data Packet
- * @note 156 bytes
+ * @note 80 bytes
  */
 typedef struct
 {
@@ -335,7 +341,7 @@ typedef struct
 
 /**
  * @brief Lidar IP Config
- * @note 16 bytes
+ * @note 20 bytes
  */
 typedef struct 
 {
@@ -349,7 +355,7 @@ typedef struct
 
 /**
  * @brief Lidar IP config packet
- * @note 40 bytes
+ * @note 44 bytes
  */
 typedef struct
 {
@@ -432,7 +438,45 @@ typedef struct
     FrameTail tail;
 }LidarUserCtrlCmdPacket;
 
+///////////////////////////////////////////////////////////////////////////////
+// LAYOUT GUARDS
+//
+// These packets are exchanged with the lidar as raw bytes, so their in-memory
+// layout is part of the protocol. The pre-built libunilidar_sdk2.a was compiled
+// against exactly these definitions; if a compiler, a target platform or an
+// edit to this header changes any of the sizes, the asserts below fail at
+// compile time instead of the driver silently decoding garbage.
+///////////////////////////////////////////////////////////////////////////////
 
+#if defined(__cplusplus) && __cplusplus >= 201103L
+
+static_assert(sizeof(FrameHeader) == 12, "FrameHeader layout changed");
+static_assert(sizeof(FrameTail) == 12, "FrameTail layout changed");
+static_assert(sizeof(TimeStamp) == 8, "TimeStamp layout changed");
+static_assert(sizeof(DataInfo) == 16, "DataInfo layout changed");
+static_assert(sizeof(LidarCalibParam) == 32, "LidarCalibParam layout changed");
+static_assert(sizeof(LidarInsideState) == 36, "LidarInsideState layout changed");
+static_assert(sizeof(LidarPointData) == 1020, "LidarPointData layout changed");
+static_assert(sizeof(LidarPointDataPacket) == 1044, "LidarPointDataPacket layout changed");
+static_assert(sizeof(Lidar2DPointData) == 5512, "Lidar2DPointData layout changed");
+static_assert(sizeof(Lidar2DPointDataPacket) == 5536, "Lidar2DPointDataPacket layout changed");
+static_assert(sizeof(LidarTimeStampPacket) == 32, "LidarTimeStampPacket layout changed");
+static_assert(sizeof(LidarImuData) == 56, "LidarImuData layout changed");
+static_assert(sizeof(LidarImuDataPacket) == 80, "LidarImuDataPacket layout changed");
+static_assert(sizeof(LidarAckData) == 16, "LidarAckData layout changed");
+static_assert(sizeof(LidarAckDataPacket) == 40, "LidarAckDataPacket layout changed");
+static_assert(sizeof(LidarVersionData) == 80, "LidarVersionData layout changed");
+static_assert(sizeof(LidarVersionDataPacket) == 104, "LidarVersionDataPacket layout changed");
+static_assert(sizeof(LidarIpAddressConfig) == 20, "LidarIpAddressConfig layout changed");
+static_assert(sizeof(LidarIpAddressConfigPacket) == 44, "LidarIpAddressConfigPacket layout changed");
+static_assert(sizeof(LidarMacAddressConfig) == 8, "LidarMacAddressConfig layout changed");
+static_assert(sizeof(LidarMacAddressConfigPacket) == 32, "LidarMacAddressConfigPacket layout changed");
+static_assert(sizeof(LidarWorkModeConfig) == 4, "LidarWorkModeConfig layout changed");
+static_assert(sizeof(LidarWorkModeConfigPacket) == 28, "LidarWorkModeConfigPacket layout changed");
+static_assert(sizeof(LidarUserCtrlCmd) == 8, "LidarUserCtrlCmd layout changed");
+static_assert(sizeof(LidarUserCtrlCmdPacket) == 32, "LidarUserCtrlCmdPacket layout changed");
+
+#endif  // __cplusplus >= 201103L
 
 #ifndef __EXTERN_C__
 }

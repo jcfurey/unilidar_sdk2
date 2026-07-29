@@ -1,67 +1,125 @@
-cmake_minimum_required(VERSION 3.5)
+# **********************************************************************
+#  Copyright (c) 2020-2024, Unitree Robotics.Co.Ltd. All rights reserved.
+# **********************************************************************
+#
+# 3.16 rather than the old 3.5: CMake 4.0 dropped compatibility with < 3.5 and
+# warns loudly about anything below 3.10, which breaks the build on the newest
+# distributions (Ubuntu 26.04 / ROS 2 Lyrical).
+cmake_minimum_required(VERSION 3.16)
 project(unitree_lidar_ros2)
 
-# Default to C99
-if(NOT CMAKE_C_STANDARD)
-  set(CMAKE_C_STANDARD 99)
-endif()
-
-# Default to C++14
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(pcl_conversions REQUIRED)
-find_package(PCL REQUIRED)
-find_package(tf2_ros REQUIRED)
-find_package(sensor_msgs REQUIRED)
+# ament_cmake_auto derives find_package() calls, target dependencies, exports and
+# install rules from package.xml, so the dependency list lives in exactly one
+# place.
+find_package(ament_cmake_auto REQUIRED)
+ament_auto_find_build_dependencies()
 
-include_directories(
-  ${PCL_INCLUDE_DIRS} 
-  include
-  ../../../unitree_lidar_sdk/include
+find_package(Threads REQUIRED)
+
+# ---------------------------------------------------------------------------
+# Pre-built Unitree LiDAR SDK
+# ---------------------------------------------------------------------------
+
+set(UNILIDAR_SDK_DIR "" CACHE PATH
+  "Path to the unitree_lidar_sdk directory. Defaults to the copy in this repository.")
+if(NOT UNILIDAR_SDK_DIR)
+  # <repo>/unitree_lidar_ros2/src/unitree_lidar_ros2 -> <repo>/unitree_lidar_sdk
+  set(UNILIDAR_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../unitree_lidar_sdk")
+endif()
+get_filename_component(UNILIDAR_SDK_DIR "${UNILIDAR_SDK_DIR}" ABSOLUTE)
+
+if(NOT UNILIDAR_SDK_ARCH)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(UNILIDAR_SDK_ARCH "x86_64")
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    set(UNILIDAR_SDK_ARCH "aarch64")
+  else()
+    message(FATAL_ERROR
+      "unilidar_sdk2 ships pre-built libraries for x86_64 and aarch64 only, but "
+      "CMAKE_SYSTEM_PROCESSOR is '${CMAKE_SYSTEM_PROCESSOR}'. Set UNILIDAR_SDK_ARCH "
+      "manually if you know which archive to use.")
+  endif()
+endif()
+
+set(UNILIDAR_SDK_LIBRARY "${UNILIDAR_SDK_DIR}/lib/${UNILIDAR_SDK_ARCH}/libunilidar_sdk2.a")
+set(UNILIDAR_SDK_INCLUDE_DIR "${UNILIDAR_SDK_DIR}/include")
+
+if(NOT EXISTS "${UNILIDAR_SDK_LIBRARY}")
+  message(FATAL_ERROR
+    "Cannot find the unilidar_sdk2 library at ${UNILIDAR_SDK_LIBRARY}. Point "
+    "UNILIDAR_SDK_DIR at your unitree_lidar_sdk checkout, for example: "
+    "colcon build --cmake-args -DUNILIDAR_SDK_DIR=/path/to/unitree_lidar_sdk")
+endif()
+if(NOT EXISTS "${UNILIDAR_SDK_INCLUDE_DIR}/unitree_lidar_sdk.h")
+  message(FATAL_ERROR "Cannot find the unilidar_sdk2 headers in ${UNILIDAR_SDK_INCLUDE_DIR}")
+endif()
+
+# Imported target: consumers get the include path and the pthread dependency for
+# free, and CMake treats an imported target's includes as SYSTEM so the SDK
+# headers do not drown the build in warnings.
+add_library(unilidar::sdk2 STATIC IMPORTED)
+set_target_properties(unilidar::sdk2 PROPERTIES
+  IMPORTED_LOCATION "${UNILIDAR_SDK_LIBRARY}"
+  INTERFACE_INCLUDE_DIRECTORIES "${UNILIDAR_SDK_INCLUDE_DIR}"
+  INTERFACE_LINK_LIBRARIES "Threads::Threads"
 )
 
-link_directories(
-  ${PCL_LIBRARY_DIRS}
-  ../../../unitree_lidar_sdk/lib/${CMAKE_SYSTEM_PROCESSOR}
+# ---------------------------------------------------------------------------
+# Driver
+# ---------------------------------------------------------------------------
+
+# Built as a library so the driver can either run on its own or be loaded into a
+# component container together with whatever consumes the point cloud, which
+# avoids serialising every scan over the loopback interface.
+ament_auto_add_library(${PROJECT_NAME}_component SHARED
+  src/unitree_lidar_node.cpp
+)
+target_link_libraries(${PROJECT_NAME}_component unilidar::sdk2)
+
+rclcpp_components_register_nodes(${PROJECT_NAME}_component
+  "unitree_lidar_ros2::UnitreeLidarNode"
 )
 
-add_definitions(${PCL_DEFINITIONS})
-
-add_executable(unitree_lidar_ros2_node src/unitree_lidar_ros2_node.cpp)
-
-target_link_libraries( unitree_lidar_ros2_node
-  ${Boost_SYSTEM_LIBRARY}
-  ${PCL_LIBRARIES}
-  libunilidar_sdk2.a
+# Standalone executable. Kept hand written rather than generated by
+# rclcpp_components_register_node() so that a bad parameter or an unreachable
+# lidar is reported and exits non-zero instead of aborting.
+ament_auto_add_executable(unitree_lidar_ros2_node
+  src/unitree_lidar_ros2_node.cpp
 )
+target_link_libraries(unitree_lidar_ros2_node ${PROJECT_NAME}_component)
 
-ament_target_dependencies(
-  unitree_lidar_ros2_node
-  rclcpp std_msgs 
-  sensor_msgs
-  geometry_msgs 
-  tf2_ros
-  pcl_conversions
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_point_cloud_layout test/test_point_cloud_layout.cpp)
+  if(TARGET test_point_cloud_layout)
+    target_include_directories(test_point_cloud_layout PRIVATE include)
+    target_link_libraries(test_point_cloud_layout unilidar::sdk2)
+  endif()
+endif()
+
+# INSTALL_TO_SHARE puts the directories under share/unitree_lidar_ros2/, which is
+# where get_package_share_directory() and `ros2 launch` look for them.
+ament_auto_package(INSTALL_TO_SHARE
+  config
+  launch
+  rviz
 )
-
-install(TARGETS
-unitree_lidar_ros2_node
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-# install rviz file and launch file
-install(FILES rviz/view.rviz launch/launch.py
-  DESTINATION share/${PROJECT_NAME}
-)
-
-ament_package()
