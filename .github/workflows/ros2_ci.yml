@@ -60,6 +60,18 @@ jobs:
           source "/opt/ros/$ROS_DISTRO/setup.bash"
           colcon test --event-handlers console_direct+ --return-code-on-test-failure
 
+      - name: Check the launch files parse
+        shell: bash
+        working-directory: unitree_lidar_ros2
+        run: |
+          set -ex
+          source install/setup.bash
+          # Nothing compiles the launch files, so a broken substitution or a bad
+          # import would otherwise only show up when someone tries to run them.
+          # --show-args evaluates the launch description and exits.
+          ros2 launch unitree_lidar_ros2 launch.py --show-args
+          ros2 launch unitree_lidar_ros2 composed_launch.py --show-args
+
       - name: Check the node starts and advertises its topics
         shell: bash
         working-directory: unitree_lidar_ros2
