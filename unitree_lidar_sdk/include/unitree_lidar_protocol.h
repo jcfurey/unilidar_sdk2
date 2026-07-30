@@ -88,7 +88,11 @@ typedef struct
  */
 typedef struct
 {
-    uint32_t crc32;               // crc check of head and data
+    // crc32 of the payload between the header and this tail - the `data` member of
+    // the packet - and not of the header as well. Verified against the parser in
+    // the pre-built library: a checksum computed over header + payload is
+    // rejected, one over the payload alone is accepted.
+    uint32_t crc32;
     uint32_t msg_type_check;      // msg ack for lidar
     uint8_t reserve[2];           // reserve
     uint8_t tail[2];              // Tail: 0x00 0xFF

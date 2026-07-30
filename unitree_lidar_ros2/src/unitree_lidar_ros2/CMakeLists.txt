@@ -107,12 +107,37 @@ target_link_libraries(unitree_lidar_ros2_node ${PROJECT_NAME}_component)
 # ---------------------------------------------------------------------------
 
 if(BUILD_TESTING)
+  # Runs the linters declared as <test_depend> in package.xml. ament_copyright and
+  # ament_pep257 are deliberately not among them: the copyright headers are the
+  # vendor's and are not in a form ament_copyright recognises.
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+
   find_package(ament_cmake_gtest REQUIRED)
 
-  ament_add_gtest(test_point_cloud_layout test/test_point_cloud_layout.cpp)
-  if(TARGET test_point_cloud_layout)
-    target_include_directories(test_point_cloud_layout PRIVATE include)
-    target_link_libraries(test_point_cloud_layout unilidar::sdk2)
+  # Tests that only need the SDK headers and the driver's own pure helpers.
+  foreach(test_name
+      test_point_cloud_layout
+      test_conversions
+      test_sdk_reference_parsers)
+    ament_add_gtest(${test_name} test/${test_name}.cpp)
+    if(TARGET ${test_name})
+      target_include_directories(${test_name} PRIVATE include)
+      target_link_libraries(${test_name} unilidar::sdk2)
+    endif()
+  endforeach()
+
+  # Drives the real node over loopback with synthesised packets, so it needs the
+  # driver itself and a generous timeout for discovery.
+  #
+  # Linking the component target is enough: ament_auto_add_library() attaches the
+  # package's dependencies publicly, so rclcpp, sensor_msgs and tf2_ros - and with
+  # it tf2_msgs - propagate to anything that links it. Deliberately not
+  # ament_target_dependencies(), which no longer exists on Rolling.
+  ament_add_gtest(test_driver_end_to_end test/test_driver_end_to_end.cpp TIMEOUT 180)
+  if(TARGET test_driver_end_to_end)
+    target_include_directories(test_driver_end_to_end PRIVATE include test)
+    target_link_libraries(test_driver_end_to_end ${PROJECT_NAME}_component)
   endif()
 endif()
 

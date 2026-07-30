@@ -2,10 +2,13 @@
 
 ROS 2 driver for the Unitree LiDAR L2.
 
-Built, tested and smoke run against **Humble**, **Jazzy** (the primary target),
-**Kilted** and **Rolling** - the development line that becomes **Lyrical** - with
-no compiler warnings on any of them. CI covers all four; Jazzy is the one that
-gates the build.
+Built, tested and smoke run against **Jazzy** (the primary target), **Kilted**
+and **Rolling** - the development line that becomes **Lyrical** - with no compiler
+warnings on any of them. CI covers all three and Jazzy gates the build.
+
+It also compiles and passes its unit tests on **Humble**, which is not in the CI
+matrix: Humble's uncrustify predates the current ament style rules, so its style
+check disagrees with sources formatted for Jazzy and newer.
 
 ## Topics
 

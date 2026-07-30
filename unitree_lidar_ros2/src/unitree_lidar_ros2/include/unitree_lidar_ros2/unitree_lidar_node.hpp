@@ -31,7 +31,7 @@
 
 // SDK. Included through the plain C++ interface only: this driver deliberately
 // does not use unitree_lidar_sdk_pcl.h, so the package does not depend on PCL.
-#include "unitree_lidar_sdk.h"
+#include "unitree_lidar_sdk.h"  // NOLINT(build/include_subdir)
 
 namespace unitree_lidar_ros2
 {

@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include "unitree_lidar_sdk.h"
+#include "unitree_lidar_sdk.h"  // NOLINT(build/include_subdir)
 
 namespace unitree_lidar_ros2
 {

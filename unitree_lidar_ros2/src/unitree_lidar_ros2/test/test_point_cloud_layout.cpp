@@ -23,7 +23,9 @@ T readAt(const std::vector<uint8_t> & data, size_t offset)
   return value;
 }
 
-unilidar_sdk2::PointUnitree makePoint(float x, float y, float z, float intensity, float time, uint32_t ring)
+unilidar_sdk2::PointUnitree makePoint(
+  float x, float y, float z, float intensity, float time,
+  uint32_t ring)
 {
   unilidar_sdk2::PointUnitree point{};
   point.x = x;
@@ -70,7 +72,8 @@ TEST(PointCloudLayout, PacksEveryFieldAtItsOffset)
     // PCL's homogeneous coordinate.
     EXPECT_FLOAT_EQ(readAt<float>(data, base + 12), 1.0f) << "point " << i;
     EXPECT_FLOAT_EQ(readAt<float>(data, base + 16), expected.intensity) << "point " << i;
-    EXPECT_EQ(readAt<uint16_t>(data, base + 20), static_cast<uint16_t>(expected.ring)) << "point " << i;
+    EXPECT_EQ(readAt<uint16_t>(data, base + 20),
+      static_cast<uint16_t>(expected.ring)) << "point " << i;
     EXPECT_FLOAT_EQ(readAt<float>(data, base + 24), expected.time) << "point " << i;
   }
 }

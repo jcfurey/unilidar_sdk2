@@ -113,7 +113,39 @@ Prepares the SDK and the ROS 2 driver for ROS 2 Jazzy and Lyrical.
 - Pass `USE_SCOPED_HEADER_INSTALL_DIR` to `ament_auto_package()`, which installs
   headers to `include/unitree_lidar_ros2/`. That becomes the default in Kilted, so
   asking for it keeps the layout the same on every distribution.
-- Builds warning free and passes its tests on Humble, Jazzy, Kilted and Rolling.
+- Stopped using `ament_target_dependencies()`, which no longer exists on Rolling;
+  linking the component target propagates its dependencies instead.
+- Test code uses `SingleThreadedExecutor::spin_some()` rather than
+  `rclcpp::spin_some(node)`, which is deprecated from Rolling on.
+- Builds warning free on Humble, Jazzy, Kilted and Rolling.
+
+### Tests and linting
+- `ament_lint_auto` now runs cpplint, uncrustify, flake8 and lint_cmake over the
+  package. ament_copyright and ament_pep257 are left out because the copyright
+  headers are the vendor's, and ament_xmllint because it validates package.xml
+  against a schema it fetches over the network.
+- 35 test cases across four executables:
+  - `test_conversions` covers the timestamp arithmetic (including that splitting a
+    Unix timestamp before scaling is what keeps the seconds exact), the IMU
+    quaternion normalisation and its rejection of the all zero quaternion the
+    lidar sends with its IMU disabled, the 2D range window, and the point count
+    clamp.
+  - `test_point_cloud_layout` pins the published cloud to the layout
+    `pcl::toROSMsg()` used to emit.
+  - `test_sdk_reference_parsers` covers the reference parsers in
+    `unitree_lidar_utilities.h`, including that a packet claiming more points than
+    the array holds is clamped rather than read out of bounds.
+  - `test_driver_end_to_end` runs the real node against synthesised UDP packets
+    and checks what it publishes: the IMU orientation and its transform agreeing
+    on `(x, y, z, w)`, the transform carrying the sample's own stamp, the cloud's
+    fields and geometry, the latched mounting transform, degenerate quaternions
+    being dropped, and a malformed point count neither crashing the driver nor
+    stopping it.
+- The pure conversions moved into `conversions.hpp`, which has no ROS dependency
+  so it can be tested on its own.
+- Corrected the comment on `FrameTail::crc32`: the checksum covers the payload
+  only, not "head and data". Established by testing the pre-built parser, which
+  rejects a checksum computed over header + payload.
 
 ### Known SDK limitations
 - `closeUDP()` and `closeSerial()` recurse without bound inside

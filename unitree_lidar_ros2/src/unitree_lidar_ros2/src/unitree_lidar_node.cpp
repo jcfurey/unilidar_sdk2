@@ -5,6 +5,7 @@
 #include "unitree_lidar_ros2/unitree_lidar_node.hpp"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -17,6 +18,7 @@
 #include <rcl_interfaces/msg/integer_range.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
+#include "unitree_lidar_ros2/conversions.hpp"
 #include "unitree_lidar_ros2/point_cloud_layout.hpp"
 
 namespace unitree_lidar_ros2
@@ -216,7 +218,8 @@ void UnitreeLidarNode::declareParameters()
       true));
 
   params_.serial_port = declare_parameter<std::string>(
-    "serial_port", "/dev/ttyACM0", describe("Serial device, used when initialize_type is 1.", true));
+    "serial_port", "/dev/ttyACM0",
+      describe("Serial device, used when initialize_type is 1.", true));
   params_.baudrate = declare_parameter<int>(
     "baudrate", 4000000, describeIntRange("Serial baud rate.", 9600, 12000000, true));
 
@@ -243,9 +246,11 @@ void UnitreeLidarNode::declareParameters()
       "clock when they are received. Forced to 'ros' when use_sim_time is enabled.",
       true));
   params_.range_min = declare_parameter<double>(
-    "range_min", 0.0, describeRange("Discard returns closer than this, in metres.", 0.0, 1000.0, true));
+    "range_min", 0.0,
+      describeRange("Discard returns closer than this, in metres.", 0.0, 1000.0, true));
   params_.range_max = declare_parameter<double>(
-    "range_max", 100.0, describeRange("Discard returns further than this, in metres.", 0.0, 1000.0, true));
+    "range_max", 100.0,
+      describeRange("Discard returns further than this, in metres.", 0.0, 1000.0, true));
 
   params_.cloud_frame = declare_parameter<std::string>(
     "cloud_frame", "unilidar_lidar", describe("frame_id of the published point cloud.", true));
@@ -273,7 +278,8 @@ void UnitreeLidarNode::declareParameters()
 
   params_.start_rotation_on_startup = declare_parameter<bool>(
     "start_rotation_on_startup", true,
-    describe("Send a start command on start up, needed when the lidar powers up in standby.", true));
+    describe("Send a start command on start up, needed when the lidar powers up in standby.",
+      true));
   params_.stop_rotation_on_shutdown = declare_parameter<bool>(
     "stop_rotation_on_shutdown", false,
     describe("Stop the lidar rotating when the node shuts down.", true));
@@ -294,7 +300,8 @@ void UnitreeLidarNode::declareParameters()
       0, 100000, true));
   params_.watchdog_timeout = declare_parameter<double>(
     "watchdog_timeout", 3.0,
-    describeRange("Warn when no packet arrives for this many seconds. 0 disables.", 0.0, 3600.0, true));
+    describeRange("Warn when no packet arrives for this many seconds. 0 disables.", 0.0, 3600.0,
+      true));
 
   if (params_.range_max <= params_.range_min) {
     throw std::invalid_argument(
@@ -362,9 +369,9 @@ void UnitreeLidarNode::openLidar()
         params_.lidar_ip.c_str(), params_.lidar_port,
         params_.local_ip.c_str(), params_.local_port);
       result = lidar_->initializeUDP(
-        static_cast<unsigned short>(params_.lidar_port),
+        static_cast<uint16_t>(params_.lidar_port),
         params_.lidar_ip,
-        static_cast<unsigned short>(params_.local_port),
+        static_cast<uint16_t>(params_.local_port),
         params_.local_ip,
         static_cast<uint16_t>(params_.cloud_scan_num),
         params_.use_system_timestamp,
@@ -499,25 +506,14 @@ void UnitreeLidarNode::handleImuPacket()
   // The SDK stores the quaternion as (x, y, z, w); see the print in the SDK's
   // own example. The transform broadcast below used to read it as (w, x, y, z),
   // which disagreed with the orientation published on the IMU topic.
-  double qx = imu.quaternion[0];
-  double qy = imu.quaternion[1];
-  double qz = imu.quaternion[2];
-  double qw = imu.quaternion[3];
-
-  const double norm = std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
-  if (!std::isfinite(norm) || norm < 1e-6) {
-    // tf2 and most consumers reject a non normalised quaternion outright, so
-    // dropping the sample beats poisoning the transform tree with it.
+  Orientation orientation;
+  if (!normalizeOrientation(imu.quaternion, orientation)) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
-      "Dropping an IMU sample whose orientation quaternion is degenerate (norm %.3e). Is the IMU "
-      "disabled by bit 2 of work_mode?", norm);
+      "Dropping an IMU sample whose orientation quaternion is degenerate. Is the IMU disabled by "
+      "bit 2 of work_mode?");
     return;
   }
-  qx /= norm;
-  qy /= norm;
-  qz /= norm;
-  qw /= norm;
 
   const rclcpp::Time stamp = resolveStamp(
     static_cast<double>(imu.info.stamp.sec) + static_cast<double>(imu.info.stamp.nsec) * 1e-9);
@@ -526,10 +522,10 @@ void UnitreeLidarNode::handleImuPacket()
   msg->header.stamp = stamp;
   msg->header.frame_id = params_.imu_frame;
 
-  msg->orientation.x = qx;
-  msg->orientation.y = qy;
-  msg->orientation.z = qz;
-  msg->orientation.w = qw;
+  msg->orientation.x = orientation.x;
+  msg->orientation.y = orientation.y;
+  msg->orientation.z = orientation.z;
+  msg->orientation.w = orientation.w;
 
   msg->angular_velocity.x = imu.angular_velocity[0];
   msg->angular_velocity.y = imu.angular_velocity[1];
@@ -552,10 +548,10 @@ void UnitreeLidarNode::handleImuPacket()
     transform.transform.translation.x = 0.0;
     transform.transform.translation.y = 0.0;
     transform.transform.translation.z = 0.0;
-    transform.transform.rotation.x = qx;
-    transform.transform.rotation.y = qy;
-    transform.transform.rotation.z = qz;
-    transform.transform.rotation.w = qw;
+    transform.transform.rotation.x = orientation.x;
+    transform.transform.rotation.y = orientation.y;
+    transform.transform.rotation.z = orientation.z;
+    transform.transform.rotation.w = orientation.w;
     tf_broadcaster_->sendTransform(transform);
   }
 }
@@ -597,23 +593,18 @@ void UnitreeLidarNode::handleLaserScanPacket()
 
   // point_num comes off the wire, so clamp it to the array it indexes.
   const size_t max_points = sizeof(data.ranges) / sizeof(data.ranges[0]);
-  const size_t num_points = std::min<size_t>(data.point_num, max_points);
+  const size_t num_points = clampPointCount(data.point_num, max_points);
   if (num_points == 0) {
     return;
   }
 
-  float range_min = static_cast<float>(params_.range_min);
-  float range_max = static_cast<float>(params_.range_max);
-  if (data.range_max > data.range_min) {
-    // Tighten the configured window with what the lidar reports for this scan.
-    range_min = std::max(range_min, data.range_min);
-    range_max = std::min(range_max, data.range_max);
-  }
-  if (!(range_max > range_min)) {
+  const RangeWindow window = resolveRangeWindow(
+    params_.range_min, params_.range_max, data.range_min, data.range_max);
+  if (!window.valid()) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
       "The 2D scan range window is empty (%.3f .. %.3f m); every return will be marked invalid.",
-      range_min, range_max);
+      window.min, window.max);
   }
 
   auto msg = std::make_unique<sensor_msgs::msg::LaserScan>();
@@ -624,27 +615,16 @@ void UnitreeLidarNode::handleLaserScanPacket()
   // parser; leaving it out skews the whole scan.
   msg->angle_min = data.angle_min + data.param.alpha_angle_bias;
   msg->angle_increment = data.angle_increment;
-  msg->angle_max = msg->angle_min + data.angle_increment * static_cast<float>(num_points - 1);
+  msg->angle_max = scanAngleMax(msg->angle_min, data.angle_increment, num_points);
   msg->time_increment = data.time_increment;
   msg->scan_time = data.scan_period;
-  msg->range_min = range_min;
-  msg->range_max = range_max;
+  msg->range_min = window.min;
+  msg->range_max = window.max;
   msg->ranges.resize(num_points);
   msg->intensities.resize(num_points);
 
-  // LaserScan asks for readings outside the valid window to be discarded; a 0.0
-  // range as published before reads as a real return right at the sensor.
-  const float invalid = std::numeric_limits<float>::infinity();
   for (size_t i = 0; i < num_points; ++i) {
-    const uint16_t raw = data.ranges[i];
-    float range = invalid;
-    if (raw >= 1) {
-      range = data.param.range_scale * (static_cast<float>(raw) + data.param.range_bias);
-      if (range < range_min || range > range_max) {
-        range = invalid;
-      }
-    }
-    msg->ranges[i] = range;
+    msg->ranges[i] = convertScanRange(data.ranges[i], data.param, window);
     msg->intensities[i] = static_cast<float>(data.intensities[i]);
   }
 
@@ -681,18 +661,13 @@ rclcpp::Time UnitreeLidarNode::resolveStamp(double sensor_stamp)
     if (use_sim_time_ && now.nanoseconds() == 0) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), steady_clock_, kThrottleMs,
-        "use_sim_time is enabled but the ROS clock still reads zero; is anything publishing /clock?");
+        "use_sim_time is enabled but the ROS clock still reads zero; is anything publishing "
+        "/clock?");
     }
     return now;
   }
 
-  // Split before scaling: (whole + fraction) * 1e9 in one step loses the low
-  // digits of a Unix timestamp to the 53 bit mantissa of a double.
-  const double whole_seconds = std::floor(sensor_stamp);
-  const int64_t nanoseconds = static_cast<int64_t>(whole_seconds) * 1000000000LL +
-    static_cast<int64_t>(std::llround((sensor_stamp - whole_seconds) * 1e9));
-
-  const rclcpp::Time stamp(nanoseconds, RCL_ROS_TIME);
+  const rclcpp::Time stamp(sensorStampToNanoseconds(sensor_stamp), RCL_ROS_TIME);
   const double offset = (this->now() - stamp).seconds();
   if (std::fabs(offset) > kClockOffsetWarnSeconds) {
     RCLCPP_WARN_THROTTLE(
@@ -732,17 +707,17 @@ void UnitreeLidarNode::checkLiveness()
   if (params_.connection == ConnectionType::Udp) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
-      "No data from the lidar for %.1f s (%lu clouds and %lu imu samples so far). Check that it is "
-      "powered and rotating, that %s is reachable, and that this host is configured as %s:%d.",
-      idle_seconds, static_cast<unsigned long>(clouds), static_cast<unsigned long>(imu_samples),
+      "No data from the lidar for %.1f s (%" PRIu64 " clouds and %" PRIu64 " imu samples so far). "
+      "Check that it is powered and rotating, that %s is reachable, and that this host is "
+      "configured as %s:%d.",
+      idle_seconds, clouds, imu_samples,
       params_.lidar_ip.c_str(), params_.local_ip.c_str(), params_.local_port);
   } else {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
-      "No data from the lidar for %.1f s on %s (%lu clouds and %lu imu samples so far). Check that "
-      "it is powered, rotating, and in serial mode.",
-      idle_seconds, params_.serial_port.c_str(), static_cast<unsigned long>(clouds),
-      static_cast<unsigned long>(imu_samples));
+      "No data from the lidar for %.1f s on %s (%" PRIu64 " clouds and %" PRIu64 " imu samples so "
+      "far). Check that it is powered, rotating, and in serial mode.",
+      idle_seconds, params_.serial_port.c_str(), clouds, imu_samples);
   }
 }
 
