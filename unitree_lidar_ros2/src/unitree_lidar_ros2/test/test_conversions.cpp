@@ -19,6 +19,7 @@ using unitree_lidar_ros2::normalizeOrientation;
 using unitree_lidar_ros2::resolveRangeWindow;
 using unitree_lidar_ros2::scanAngleMax;
 using unitree_lidar_ros2::sensorStampToNanoseconds;
+using unitree_lidar_ros2::validLaserScanMetadata;
 
 constexpr float kInfinity = std::numeric_limits<float>::infinity();
 }  // namespace
@@ -215,6 +216,22 @@ TEST(RangeWindowResolution, ReportsAnUnusableWindow)
 {
   EXPECT_FALSE(resolveRangeWindow(10.0, 1.0, 0.0f, 0.0f).valid());
   EXPECT_FALSE(resolveRangeWindow(5.0, 5.0, 0.0f, 0.0f).valid());
+}
+
+TEST(LaserScanMetadata, RejectsNonFiniteOrUnusableCalibration)
+{
+  unilidar_sdk2::Lidar2DPointData data{};
+  data.angle_increment = 0.01f;
+  data.time_increment = 0.001f;
+  data.scan_period = 0.1f;
+  data.param.range_scale = 0.001f;
+  EXPECT_TRUE(validLaserScanMetadata(data));
+
+  data.param.range_scale = 0.0f;
+  EXPECT_FALSE(validLaserScanMetadata(data));
+  data.param.range_scale = 0.001f;
+  data.angle_min = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_FALSE(validLaserScanMetadata(data));
 }
 
 // ---------------------------------------------------------------------------

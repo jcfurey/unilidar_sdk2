@@ -12,8 +12,9 @@
   ros__parameters:
 
     # --- Connection -------------------------------------------------------
-    # 1 = serial port, 2 = UDP / ethernet (factory default).
-    initialize_type: 2
+    # "ethernet" (factory default) or "serial". The deprecated
+    # initialize_type parameter remains available for old configurations.
+    transport: "ethernet"
 
     # Bitfield stored in the lidar: bit 0 wide FOV, bit 1 2D mode, bit 2
     # disable IMU, bit 3 serial instead of ethernet, bit 4 wait for a start
@@ -21,13 +22,16 @@
     work_mode: 0
     # The lidar keeps work_mode across power cycles. Set this to false to leave
     # whatever is already programmed into the device alone.
-    set_work_mode: true
+    set_work_mode: false
+    # Required when intentionally programming a work_mode whose transport bit
+    # differs from transport above. The change takes effect after restart.
+    allow_work_mode_transport_switch: false
 
-    # Serial, used when initialize_type is 1.
+    # Serial, used when transport is "serial".
     serial_port: "/dev/ttyACM0"
     baudrate: 4000000
 
-    # Ethernet, used when initialize_type is 2. lidar_ip may also be a DNS/mDNS
+    # Ethernet, used when transport is "ethernet". lidar_ip may also be a DNS/mDNS
     # hostname for a DHCP lease. Set local_ip to "auto" when the host interface
     # address is assigned by DHCP; the driver selects the source address from
     # the route to lidar_ip. The factory-static pair is shown below.
@@ -37,7 +41,7 @@
     local_port: 6201
 
     # --- Data -------------------------------------------------------------
-    # Scan lines accumulated into one published cloud.
+    # Scan lines accumulated into one published cloud (accepted range 1..1000).
     cloud_scan_num: 18
     # Returns outside this window, in metres, are dropped.
     range_min: 0.0
@@ -69,6 +73,9 @@
     publish_static_tf: true
     # Origin of the cloud frame expressed in the IMU frame, in metres.
     imu_to_lidar_translation: [0.007698, 0.014655, -0.00667]
+    # Rotation from the IMU frame to the cloud frame as [x, y, z, w]. Robot
+    # mounting transforms belong in URDF, outside this sensor-internal transform.
+    imu_to_lidar_rotation: [0.0, 0.0, 0.0, 1.0]
 
     # --- Lifecycle --------------------------------------------------------
     # Needed when the lidar is configured to power up in standby (work_mode
@@ -77,13 +84,24 @@
     stop_rotation_on_shutdown: false
 
     # --- QoS and tuning ---------------------------------------------------
-    # "default" is reliable, "sensor_data" is best effort. Note a reliable
-    # subscriber never matches a best effort publisher.
-    qos_profile: "default"
-    qos_depth: 10
+    # Sensor streams default to best effort so a slow subscriber cannot hold up
+    # the reader thread. Use "default" for reliable delivery where required.
+    # Standard ROS QoS overrides are also enabled for all three publishers.
+    cloud_qos_profile: "sensor_data"
+    cloud_qos_depth: 5
+    imu_qos_profile: "sensor_data"
+    imu_qos_depth: 5
+    laserscan_qos_profile: "sensor_data"
+    laserscan_qos_depth: 5
 
     # How long the reader thread sleeps when no packet was waiting, in
     # microseconds. 0 spins on the CPU instead.
     idle_sleep_us: 100
     # Warn when no packet arrives for this long, in seconds. 0 disables.
     watchdog_timeout: 3.0
+
+    # --- Diagnostics ------------------------------------------------------
+    diagnostics_topic: "/diagnostics"
+    # Reports connection state, per-stream rates, data age and versions.
+    # Set to 0 to disable diagnostic publication.
+    diagnostics_period: 1.0

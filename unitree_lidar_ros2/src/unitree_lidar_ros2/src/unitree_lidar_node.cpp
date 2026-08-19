@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -21,10 +22,13 @@
 #include <utility>
 #include <vector>
 
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <diagnostic_msgs/msg/key_value.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rcl_interfaces/msg/floating_point_range.hpp>
 #include <rcl_interfaces/msg/integer_range.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
+#include <rclcpp/qos_overriding_options.hpp>
 
 #include "unitree_lidar_ros2/conversions.hpp"
 #include "unitree_lidar_ros2/point_cloud_layout.hpp"
@@ -59,6 +63,9 @@ std::string resolveIpv4Address(const std::string & host, int port)
   }
   const std::unique_ptr<addrinfo, decltype(& freeaddrinfo)> addresses(
     raw_addresses, freeaddrinfo);
+  if (!addresses) {
+    throw std::runtime_error("No IPv4 address was returned for '" + host + "'");
+  }
 
   const auto * address = reinterpret_cast<const sockaddr_in *>(addresses->ai_addr);
   char numeric_address[INET_ADDRSTRLEN]{};
@@ -167,7 +174,50 @@ rclcpp::QoS makeQos(const std::string & profile, int depth)
     return rclcpp::QoS(history);
   }
   throw std::invalid_argument(
-    "qos_profile must be 'default' or 'sensor_data', got '" + profile + "'");
+    "QoS profile must be 'default' or 'sensor_data', got '" + profile + "'");
+}
+
+ConnectionType parseTransport(const std::string & name)
+{
+  if (name == "ethernet" || name == "udp") {
+    return ConnectionType::Udp;
+  }
+  if (name == "serial") {
+    return ConnectionType::Serial;
+  }
+  throw std::invalid_argument(
+    "transport must be 'ethernet' or 'serial', got '" + name + "'");
+}
+
+diagnostic_msgs::msg::KeyValue diagnosticValue(
+  const std::string & key, const std::string & value)
+{
+  diagnostic_msgs::msg::KeyValue result;
+  result.key = key;
+  result.value = value;
+  return result;
+}
+
+std::string formatRate(double rate)
+{
+  if (!std::isfinite(rate)) {
+    return "0.0";
+  }
+  char text[32]{};
+  std::snprintf(text, sizeof(text), "%.1f", rate);
+  return text;
+}
+
+std::string formatAge(int64_t now_ns, int64_t then_ns)
+{
+  if (then_ns <= 0) {
+    return "never";
+  }
+  char text[32]{};
+  std::snprintf(
+    text, sizeof(text), "%.3f",
+    std::max(0.0, static_cast<double>(now_ns - then_ns) * 1e-9));
+  return text;
 }
 
 TimestampSource parseTimestampSource(const std::string & name)
@@ -234,8 +284,6 @@ UnitreeLidarNode::UnitreeLidarNode(const rclcpp::NodeOptions & options)
   }
 
   createInterfaces();
-  openLidar();
-
   if (params_.publish_static_tf) {
     publishStaticTransform();
   }
@@ -246,20 +294,35 @@ UnitreeLidarNode::UnitreeLidarNode(const rclcpp::NodeOptions & options)
       std::chrono::duration_cast<std::chrono::nanoseconds>(period),
       [this]() {checkLiveness();});
   }
+  if (params_.diagnostics_period > 0.0) {
+    diagnostics_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(params_.diagnostics_period)),
+      [this]() {publishDiagnostics();});
+  }
+
+  // Open the hardware only after every ROS interface and timer has been created.
+  // The pre-built SDK cannot release an open connection, so a constructor failure
+  // after this point would otherwise leave the component container holding the port.
+  openLidar();
 
   RCLCPP_INFO(
     get_logger(),
     "Publishing cloud on '%s' (frame '%s'), imu on '%s' (frame '%s'), 2d scan on '%s' "
-    "(frame '%s'); timestamp_source=%s, qos=%s/%d",
+    "(frame '%s'); timestamp_source=%s, qos cloud=%s/%d imu=%s/%d scan=%s/%d",
     params_.cloud_topic.c_str(), params_.cloud_frame.c_str(),
     params_.imu_topic.c_str(), params_.imu_frame.c_str(),
     params_.laserscan_topic.c_str(), params_.laserscan_frame.c_str(),
     timestamp_source_ == TimestampSource::Sensor ? "sensor" : "ros",
-    params_.qos_profile.c_str(), params_.qos_depth);
+    params_.cloud_qos_profile.c_str(), params_.cloud_qos_depth,
+    params_.imu_qos_profile.c_str(), params_.imu_qos_depth,
+    params_.laserscan_qos_profile.c_str(), params_.laserscan_qos_depth);
 
   // Started last: nothing below may throw, or the thread would be left running
   // with a half constructed node (and a joinable std::thread destructor aborts).
-  last_packet_time_ns_.store(steadyNowNs(), std::memory_order_relaxed);
+  const int64_t started_ns = steadyNowNs();
+  last_packet_time_ns_.store(started_ns, std::memory_order_relaxed);
+  last_data_time_ns_.store(started_ns, std::memory_order_relaxed);
   running_.store(true, std::memory_order_relaxed);
   poll_thread_ = std::thread(&UnitreeLidarNode::pollLoop, this);
 }
@@ -282,27 +345,44 @@ UnitreeLidarNode::~UnitreeLidarNode()
 
 void UnitreeLidarNode::declareParameters()
 {
+  const std::string transport = declare_parameter<std::string>(
+    "transport", "ethernet",
+    describe("Connection transport: 'ethernet' or 'serial'.", true));
   const int initialize_type = declare_parameter<int>(
-    "initialize_type", 2,
-    describeIntRange("How to reach the lidar: 1 = serial port, 2 = UDP / ethernet.", 1, 2, true));
-  params_.connection = static_cast<ConnectionType>(initialize_type);
+    "initialize_type", 0,
+    describeIntRange(
+      "Deprecated numeric transport override: 1 = serial, 2 = ethernet, 0 uses `transport`.",
+      0, 2, true));
+  params_.connection = parseTransport(transport);
+  if (initialize_type != 0) {
+    params_.connection = static_cast<ConnectionType>(initialize_type);
+    RCLCPP_WARN(
+      get_logger(), "Parameter 'initialize_type' is deprecated; use transport:='%s' instead.",
+      params_.connection == ConnectionType::Serial ? "serial" : "ethernet");
+  }
 
   params_.work_mode = declare_parameter<int>(
     "work_mode", 0,
-    describe(
+    describeIntRange(
       "Work mode bitfield written to the lidar. Bit 0 wide FOV, bit 1 2D mode, bit 2 disable "
       "IMU, bit 3 serial instead of ethernet, bit 4 wait for a start command after power on.",
-      true));
+      0, 31, true));
   params_.set_work_mode = declare_parameter<bool>(
-    "set_work_mode", true,
+    "set_work_mode", false,
     describe(
       "Write `work_mode` to the lidar on start up. The lidar stores it across power cycles, so "
       "set this to false to leave the mode currently programmed into the device alone.",
       true));
+  params_.allow_work_mode_transport_switch = declare_parameter<bool>(
+    "allow_work_mode_transport_switch", false,
+    describe(
+      "Permit work_mode to select a different transport from the active connection. This "
+      "intentionally moves the lidar to that transport after its next restart.",
+      true));
 
   params_.serial_port = declare_parameter<std::string>(
     "serial_port", "/dev/ttyACM0",
-      describe("Serial device, used when initialize_type is 1.", true));
+      describe("Serial device, used when transport is 'serial'.", true));
   params_.baudrate = declare_parameter<int>(
     "baudrate", 4000000, describeIntRange("Serial baud rate.", 9600, 12000000, true));
 
@@ -363,6 +443,9 @@ void UnitreeLidarNode::declareParameters()
   params_.imu_to_lidar_translation = declare_parameter<std::vector<double>>(
     "imu_to_lidar_translation", params_.imu_to_lidar_translation,
     describe("Origin of the cloud frame in the IMU frame, in metres.", true));
+  params_.imu_to_lidar_rotation = declare_parameter<std::vector<double>>(
+    "imu_to_lidar_rotation", params_.imu_to_lidar_rotation,
+    describe("Rotation from the IMU frame to the cloud frame as [x, y, z, w].", true));
 
   params_.start_rotation_on_startup = declare_parameter<bool>(
     "start_rotation_on_startup", true,
@@ -372,14 +455,43 @@ void UnitreeLidarNode::declareParameters()
     "stop_rotation_on_shutdown", false,
     describe("Stop the lidar rotating when the node shuts down.", true));
 
-  params_.qos_profile = declare_parameter<std::string>(
-    "qos_profile", "default",
+  params_.cloud_qos_profile = declare_parameter<std::string>(
+    "cloud_qos_profile", "sensor_data",
+    describe("Point cloud QoS: 'sensor_data' for best effort or 'default' for reliable.", true));
+  params_.cloud_qos_depth = declare_parameter<int>(
+    "cloud_qos_depth", 5, describeIntRange("Point cloud publisher queue depth.", 1, 10000, true));
+  params_.imu_qos_profile = declare_parameter<std::string>(
+    "imu_qos_profile", "sensor_data",
+    describe("IMU QoS: 'sensor_data' for best effort or 'default' for reliable.", true));
+  params_.imu_qos_depth = declare_parameter<int>(
+    "imu_qos_depth", 5, describeIntRange("IMU publisher queue depth.", 1, 10000, true));
+  params_.laserscan_qos_profile = declare_parameter<std::string>(
+    "laserscan_qos_profile", "sensor_data",
+    describe("LaserScan QoS: 'sensor_data' for best effort or 'default' for reliable.", true));
+  params_.laserscan_qos_depth = declare_parameter<int>(
+    "laserscan_qos_depth", 5,
+    describeIntRange("LaserScan publisher queue depth.", 1, 10000, true));
+  const std::string legacy_qos_profile = declare_parameter<std::string>(
+    "qos_profile", "",
     describe(
-      "'default' for reliable delivery, 'sensor_data' for best effort. Subscribers must be "
-      "compatible: a reliable subscriber never matches a best effort publisher.",
-      true));
-  params_.qos_depth = declare_parameter<int>(
-    "qos_depth", 10, describeIntRange("Publisher queue depth.", 1, 10000, true));
+      "Deprecated global QoS override. Empty uses the three per-topic profiles.", true));
+  const int legacy_qos_depth = declare_parameter<int>(
+    "qos_depth", 0,
+    describeIntRange("Deprecated global QoS depth. 0 uses the per-topic depths.", 0, 10000, true));
+  if (!legacy_qos_profile.empty()) {
+    RCLCPP_WARN(
+      get_logger(), "Parameter 'qos_profile' is deprecated; use the per-topic QoS profiles.");
+    params_.cloud_qos_profile = legacy_qos_profile;
+    params_.imu_qos_profile = legacy_qos_profile;
+    params_.laserscan_qos_profile = legacy_qos_profile;
+  }
+  if (legacy_qos_depth > 0) {
+    RCLCPP_WARN(
+      get_logger(), "Parameter 'qos_depth' is deprecated; use the per-topic QoS depths.");
+    params_.cloud_qos_depth = legacy_qos_depth;
+    params_.imu_qos_depth = legacy_qos_depth;
+    params_.laserscan_qos_depth = legacy_qos_depth;
+  }
 
   params_.idle_sleep_us = declare_parameter<int>(
     "idle_sleep_us", 100,
@@ -390,6 +502,12 @@ void UnitreeLidarNode::declareParameters()
     "watchdog_timeout", 3.0,
     describeRange("Warn when no packet arrives for this many seconds. 0 disables.", 0.0, 3600.0,
       true));
+  params_.diagnostics_topic = declare_parameter<std::string>(
+    "diagnostics_topic", "/diagnostics",
+    describe("Topic for diagnostic_msgs/DiagnosticArray health reports.", true));
+  params_.diagnostics_period = declare_parameter<double>(
+    "diagnostics_period", 1.0,
+    describeRange("Diagnostic publication period in seconds. 0 disables.", 0.0, 3600.0, true));
 
   if (params_.range_max <= params_.range_min) {
     throw std::invalid_argument(
@@ -401,15 +519,61 @@ void UnitreeLidarNode::declareParameters()
       "imu_to_lidar_translation must have exactly 3 elements, got " +
       std::to_string(params_.imu_to_lidar_translation.size()));
   }
+  if (params_.imu_to_lidar_rotation.size() != 4) {
+    throw std::invalid_argument(
+      "imu_to_lidar_rotation must have exactly 4 elements, got " +
+      std::to_string(params_.imu_to_lidar_rotation.size()));
+  }
+  const double rotation_norm = std::sqrt(
+    params_.imu_to_lidar_rotation[0] * params_.imu_to_lidar_rotation[0] +
+    params_.imu_to_lidar_rotation[1] * params_.imu_to_lidar_rotation[1] +
+    params_.imu_to_lidar_rotation[2] * params_.imu_to_lidar_rotation[2] +
+    params_.imu_to_lidar_rotation[3] * params_.imu_to_lidar_rotation[3]);
+  if (!std::isfinite(rotation_norm) || rotation_norm < kMinQuaternionNorm) {
+    throw std::invalid_argument("imu_to_lidar_rotation must be a finite, non-zero quaternion");
+  }
+  for (double & component : params_.imu_to_lidar_rotation) {
+    component /= rotation_norm;
+  }
+
+  if (params_.set_work_mode) {
+    const uint32_t work_mode = static_cast<uint32_t>(params_.work_mode);
+    const bool mode_selects_serial = (work_mode & kWorkModeSerialBit) != 0;
+    const bool connected_over_serial = params_.connection == ConnectionType::Serial;
+    if (mode_selects_serial != connected_over_serial) {
+      const std::string message =
+        "work_mode " + std::to_string(work_mode) + " selects " +
+        (mode_selects_serial ? "serial" : "ethernet") + " but transport selects " +
+        (connected_over_serial ? "serial" : "ethernet") +
+        ". This persistent change moves the lidar to the other transport after restart.";
+      if (!params_.allow_work_mode_transport_switch) {
+        throw std::invalid_argument(
+          message + " Set allow_work_mode_transport_switch:=true to confirm that change.");
+      }
+      RCLCPP_WARN(get_logger(), "%s", message.c_str());
+    }
+  }
 }
 
 void UnitreeLidarNode::createInterfaces()
 {
-  const rclcpp::QoS qos = makeQos(params_.qos_profile, params_.qos_depth);
+  rclcpp::PublisherOptions publisher_options;
+  publisher_options.qos_overriding_options =
+    rclcpp::QosOverridingOptions::with_default_policies();
 
-  pub_cloud_ = create_publisher<sensor_msgs::msg::PointCloud2>(params_.cloud_topic, qos);
-  pub_imu_ = create_publisher<sensor_msgs::msg::Imu>(params_.imu_topic, qos);
-  pub_laserscan_ = create_publisher<sensor_msgs::msg::LaserScan>(params_.laserscan_topic, qos);
+  pub_cloud_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+    params_.cloud_topic,
+    makeQos(params_.cloud_qos_profile, params_.cloud_qos_depth), publisher_options);
+  pub_imu_ = create_publisher<sensor_msgs::msg::Imu>(
+    params_.imu_topic,
+    makeQos(params_.imu_qos_profile, params_.imu_qos_depth), publisher_options);
+  pub_laserscan_ = create_publisher<sensor_msgs::msg::LaserScan>(
+    params_.laserscan_topic,
+    makeQos(params_.laserscan_qos_profile, params_.laserscan_qos_depth), publisher_options);
+  if (params_.diagnostics_period > 0.0) {
+    pub_diagnostics_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      params_.diagnostics_topic, rclcpp::QoS(10).reliable());
+  }
 
   if (params_.publish_imu_tf) {
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -423,6 +587,17 @@ void UnitreeLidarNode::createInterfaces()
 
 void UnitreeLidarNode::openLidar()
 {
+  // Resolve network configuration before allocating a reader. The vendor reader
+  // cannot be deleted, so even a DNS or route error should not leak one.
+  if (params_.connection == ConnectionType::Udp) {
+    params_.lidar_ip = resolveIpv4Address(params_.lidar_ip, params_.lidar_port);
+    if (params_.local_ip.empty() || params_.local_ip == "auto") {
+      params_.local_ip = selectLocalIpv4Address(params_.lidar_ip, params_.lidar_port);
+    } else {
+      params_.local_ip = resolveIpv4Address(params_.local_ip, params_.local_port);
+    }
+  }
+
   unilidar_sdk2::UnitreeLidarReader * reader = unilidar_sdk2::createUnitreeLidarReader();
   if (reader == nullptr) {
     throw std::runtime_error("createUnitreeLidarReader() returned nullptr");
@@ -452,12 +627,6 @@ void UnitreeLidarNode::openLidar()
       break;
 
     case ConnectionType::Udp:
-      params_.lidar_ip = resolveIpv4Address(params_.lidar_ip, params_.lidar_port);
-      if (params_.local_ip.empty() || params_.local_ip == "auto") {
-        params_.local_ip = selectLocalIpv4Address(params_.lidar_ip, params_.lidar_port);
-      } else {
-        params_.local_ip = resolveIpv4Address(params_.local_ip, params_.local_port);
-      }
       RCLCPP_INFO(
         get_logger(), "Opening lidar at %s:%d, listening on %s:%d",
         params_.lidar_ip.c_str(), params_.lidar_port,
@@ -481,24 +650,12 @@ void UnitreeLidarNode::openLidar()
 
     default:
       throw std::invalid_argument(
-        "initialize_type must be 1 (serial) or 2 (UDP), got " +
+        "Unknown connection type " +
         std::to_string(static_cast<int>(params_.connection)));
   }
 
   if (params_.set_work_mode) {
-    const uint32_t work_mode = static_cast<uint32_t>(params_.work_mode);
-    const bool mode_selects_serial = (work_mode & kWorkModeSerialBit) != 0;
-    const bool connected_over_serial = params_.connection == ConnectionType::Serial;
-    if (mode_selects_serial != connected_over_serial) {
-      RCLCPP_WARN(
-        get_logger(),
-        "work_mode %u selects the %s transport but the driver connected over %s. The lidar keeps "
-        "this setting across power cycles, so it will come back up on the other transport. Pass "
-        "set_work_mode:=false to leave the stored work mode untouched.",
-        work_mode, mode_selects_serial ? "serial" : "ethernet",
-        connected_over_serial ? "serial" : "ethernet");
-    }
-    lidar_->setLidarWorkMode(work_mode);
+    lidar_->setLidarWorkMode(static_cast<uint32_t>(params_.work_mode));
   }
 
   if (params_.start_rotation_on_startup) {
@@ -515,10 +672,10 @@ void UnitreeLidarNode::publishStaticTransform()
   transform.transform.translation.x = params_.imu_to_lidar_translation[0];
   transform.transform.translation.y = params_.imu_to_lidar_translation[1];
   transform.transform.translation.z = params_.imu_to_lidar_translation[2];
-  transform.transform.rotation.x = 0.0;
-  transform.transform.rotation.y = 0.0;
-  transform.transform.rotation.z = 0.0;
-  transform.transform.rotation.w = 1.0;
+  transform.transform.rotation.x = params_.imu_to_lidar_rotation[0];
+  transform.transform.rotation.y = params_.imu_to_lidar_rotation[1];
+  transform.transform.rotation.z = params_.imu_to_lidar_rotation[2];
+  transform.transform.rotation.w = params_.imu_to_lidar_rotation[3];
 
   // This offset never changes, so it goes out once on a latched topic instead of
   // being re-sent with every IMU sample as it used to be.
@@ -631,6 +788,9 @@ void UnitreeLidarNode::handleImuPacket()
 
   pub_imu_->publish(std::move(msg));
   imu_count_.fetch_add(1, std::memory_order_relaxed);
+  const int64_t published_ns = steadyNowNs();
+  last_imu_time_ns_.store(published_ns, std::memory_order_relaxed);
+  last_data_time_ns_.store(published_ns, std::memory_order_relaxed);
 
   if (params_.publish_imu_tf) {
     geometry_msgs::msg::TransformStamped transform;
@@ -678,6 +838,9 @@ void UnitreeLidarNode::handlePointCloudPacket()
   // same container - gets the message without another copy of the payload.
   pub_cloud_->publish(std::move(msg));
   cloud_count_.fetch_add(1, std::memory_order_relaxed);
+  const int64_t published_ns = steadyNowNs();
+  last_cloud_time_ns_.store(published_ns, std::memory_order_relaxed);
+  last_data_time_ns_.store(published_ns, std::memory_order_relaxed);
 }
 
 void UnitreeLidarNode::handleLaserScanPacket()
@@ -691,14 +854,21 @@ void UnitreeLidarNode::handleLaserScanPacket()
   if (num_points == 0) {
     return;
   }
+  if (!validLaserScanMetadata(data)) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), steady_clock_, kThrottleMs,
+      "Dropping a 2D scan with non-finite or invalid angle, timing, or range calibration data.");
+    return;
+  }
 
   const RangeWindow window = resolveRangeWindow(
     params_.range_min, params_.range_max, data.range_min, data.range_max);
   if (!window.valid()) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
-      "The 2D scan range window is empty (%.3f .. %.3f m); every return will be marked invalid.",
+      "Dropping a 2D scan whose range window is empty (%.3f .. %.3f m).",
       window.min, window.max);
+    return;
   }
 
   auto msg = std::make_unique<sensor_msgs::msg::LaserScan>();
@@ -724,6 +894,9 @@ void UnitreeLidarNode::handleLaserScanPacket()
 
   pub_laserscan_->publish(std::move(msg));
   laserscan_count_.fetch_add(1, std::memory_order_relaxed);
+  const int64_t published_ns = steadyNowNs();
+  last_laserscan_time_ns_.store(published_ns, std::memory_order_relaxed);
+  last_data_time_ns_.store(published_ns, std::memory_order_relaxed);
 }
 
 void UnitreeLidarNode::reportVersionsOnce()
@@ -741,6 +914,13 @@ void UnitreeLidarNode::reportVersionsOnce()
   std::string sdk;
   lidar_->getVersionOfLidarHardware(hardware);
   lidar_->getVersionOfSDK(sdk);
+
+  {
+    std::lock_guard<std::mutex> lock(version_mutex_);
+    firmware_version_ = firmware;
+    hardware_version_ = hardware;
+    sdk_version_ = sdk;
+  }
 
   RCLCPP_INFO(
     get_logger(), "Lidar connected: hardware %s, firmware %s, sdk %s",
@@ -777,22 +957,7 @@ void UnitreeLidarNode::checkLiveness()
   const int64_t now_ns = steadyNowNs();
   const uint64_t clouds = cloud_count_.load(std::memory_order_relaxed);
   const uint64_t imu_samples = imu_count_.load(std::memory_order_relaxed);
-  const uint64_t scans = laserscan_count_.load(std::memory_order_relaxed);
-
-  const double elapsed = static_cast<double>(now_ns - last_rate_report_ns_) * 1e-9;
-  if (last_rate_report_ns_ != 0 && elapsed > 0.0) {
-    RCLCPP_DEBUG(
-      get_logger(), "cloud %.1f Hz, imu %.1f Hz, 2d scan %.1f Hz",
-      static_cast<double>(clouds - reported_cloud_count_) / elapsed,
-      static_cast<double>(imu_samples - reported_imu_count_) / elapsed,
-      static_cast<double>(scans - reported_laserscan_count_) / elapsed);
-  }
-  last_rate_report_ns_ = now_ns;
-  reported_cloud_count_ = clouds;
-  reported_imu_count_ = imu_samples;
-  reported_laserscan_count_ = scans;
-
-  const int64_t last = last_packet_time_ns_.load(std::memory_order_relaxed);
+  const int64_t last = last_data_time_ns_.load(std::memory_order_relaxed);
   const double idle_seconds = static_cast<double>(now_ns - last) * 1e-9;
   if (idle_seconds < params_.watchdog_timeout) {
     return;
@@ -801,7 +966,8 @@ void UnitreeLidarNode::checkLiveness()
   if (params_.connection == ConnectionType::Udp) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
-      "No data from the lidar for %.1f s (%" PRIu64 " clouds and %" PRIu64 " imu samples so far). "
+      "No valid sensor data for %.1f s (%" PRIu64 " clouds and %" PRIu64
+      " imu samples so far). "
       "Check that it is powered and rotating, that %s is reachable, and that this host is "
       "configured as %s:%d.",
       idle_seconds, clouds, imu_samples,
@@ -809,10 +975,94 @@ void UnitreeLidarNode::checkLiveness()
   } else {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
-      "No data from the lidar for %.1f s on %s (%" PRIu64 " clouds and %" PRIu64 " imu samples so "
-      "far). Check that it is powered, rotating, and in serial mode.",
+      "No valid sensor data for %.1f s on %s (%" PRIu64 " clouds and %" PRIu64
+      " imu samples so far). Check that it is powered, rotating, and in serial mode.",
       idle_seconds, params_.serial_port.c_str(), clouds, imu_samples);
   }
+}
+
+void UnitreeLidarNode::publishDiagnostics()
+{
+  if (!pub_diagnostics_) {
+    return;
+  }
+
+  const int64_t now_ns = steadyNowNs();
+  const uint64_t clouds = cloud_count_.load(std::memory_order_relaxed);
+  const uint64_t imu_samples = imu_count_.load(std::memory_order_relaxed);
+  const uint64_t scans = laserscan_count_.load(std::memory_order_relaxed);
+  const double elapsed = last_rate_report_ns_ > 0 ?
+    static_cast<double>(now_ns - last_rate_report_ns_) * 1e-9 : 0.0;
+  const double cloud_rate = elapsed > 0.0 ?
+    static_cast<double>(clouds - reported_cloud_count_) / elapsed : 0.0;
+  const double imu_rate = elapsed > 0.0 ?
+    static_cast<double>(imu_samples - reported_imu_count_) / elapsed : 0.0;
+  const double scan_rate = elapsed > 0.0 ?
+    static_cast<double>(scans - reported_laserscan_count_) / elapsed : 0.0;
+
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = std::string(get_fully_qualified_name()) + ": Unitree L2 driver";
+
+  {
+    std::lock_guard<std::mutex> lock(version_mutex_);
+    status.hardware_id = hardware_version_.empty() ? "unitree_l2" : hardware_version_;
+    status.values.push_back(diagnosticValue("hardware_version", hardware_version_));
+    status.values.push_back(diagnosticValue("firmware_version", firmware_version_));
+    status.values.push_back(diagnosticValue("sdk_version", sdk_version_));
+  }
+
+  const int64_t last_data = last_data_time_ns_.load(std::memory_order_relaxed);
+  const double data_age = static_cast<double>(now_ns - last_data) * 1e-9;
+  const double stale_timeout = params_.watchdog_timeout > 0.0 ?
+    params_.watchdog_timeout : std::max(3.0, 3.0 * params_.diagnostics_period);
+  const bool has_data = clouds > 0 || imu_samples > 0 || scans > 0;
+  if (data_age >= stale_timeout) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    status.message = "No valid sensor data";
+  } else if (!has_data) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = "Waiting for sensor data";
+  } else {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.message = "Streaming";
+  }
+
+  status.values.push_back(diagnosticValue(
+    "transport", params_.connection == ConnectionType::Serial ? "serial" : "ethernet"));
+  status.values.push_back(diagnosticValue(
+    "endpoint", params_.connection == ConnectionType::Serial ? params_.serial_port :
+    params_.lidar_ip + ":" + std::to_string(params_.lidar_port)));
+  status.values.push_back(diagnosticValue(
+    "last_packet_age_sec", formatAge(
+      now_ns, last_packet_time_ns_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue("last_data_age_sec", formatAge(now_ns, last_data)));
+  status.values.push_back(diagnosticValue(
+    "last_cloud_age_sec", formatAge(
+      now_ns, last_cloud_time_ns_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "last_imu_age_sec", formatAge(now_ns, last_imu_time_ns_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "last_scan_age_sec", formatAge(
+      now_ns, last_laserscan_time_ns_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue("cloud_count", std::to_string(clouds)));
+  status.values.push_back(diagnosticValue("cloud_rate_hz", formatRate(cloud_rate)));
+  status.values.push_back(diagnosticValue("imu_count", std::to_string(imu_samples)));
+  status.values.push_back(diagnosticValue("imu_rate_hz", formatRate(imu_rate)));
+  status.values.push_back(diagnosticValue("scan_count", std::to_string(scans)));
+  status.values.push_back(diagnosticValue("scan_rate_hz", formatRate(scan_rate)));
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.header.stamp = this->now();
+  message.status.push_back(std::move(status));
+  pub_diagnostics_->publish(std::move(message));
+
+  RCLCPP_DEBUG(
+    get_logger(), "cloud %.1f Hz, imu %.1f Hz, 2d scan %.1f Hz",
+    cloud_rate, imu_rate, scan_rate);
+  last_rate_report_ns_ = now_ns;
+  reported_cloud_count_ = clouds;
+  reported_imu_count_ = imu_samples;
+  reported_laserscan_count_ = scans;
 }
 
 }  // namespace unitree_lidar_ros2

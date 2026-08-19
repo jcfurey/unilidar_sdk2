@@ -17,6 +17,7 @@ check disagrees with sources formatted for Jazzy and newer.
 | `unilidar/cloud` | `sensor_msgs/PointCloud2` | Fields `x`, `y`, `z`, `intensity`, `ring` (uint16), `time` (float32, seconds relative to the header stamp), `point_step` 32. |
 | `unilidar/imu` | `sensor_msgs/Imu` | Orientation, angular velocity and linear acceleration. |
 | `unilidar/laserscan` | `sensor_msgs/LaserScan` | Only when the lidar runs in 2D mode (`work_mode` bit 1). |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | Connection, per-stream rate, data age and version health. |
 | `/tf` | `tf2_msgs/TFMessage` | `<imu_frame>_initial` -> `<imu_frame>` from the IMU orientation. |
 | `/tf_static` | `tf2_msgs/TFMessage` | `<imu_frame>` -> `<cloud_frame>` mounting offset, published once. |
 
@@ -32,8 +33,9 @@ colcon build
 source install/setup.bash
 ```
 
-The package finds the pre-built SDK next to it in this repository. To build
-against a copy somewhere else:
+The package first looks for an installed `unilidar_sdk2` CMake package, then
+falls back to the pre-built SDK next to it in this repository. To use another
+source-tree copy directly:
 
 ```bash
 colcon build --cmake-args -DUNILIDAR_SDK_DIR=/path/to/unitree_lidar_sdk
@@ -53,13 +55,20 @@ documents each one. `ros2 param describe /unitree_lidar_ros2_node <name>` prints
 the same descriptions at run time.
 
 The lidar ships in ethernet mode on `192.168.1.62` and expects this host to be
-`192.168.1.2`. For serial, set `initialize_type: 1`.
+`192.168.1.2`. For serial, set `transport: serial`. The old numeric
+`initialize_type` parameter remains as a deprecated compatibility override.
 
 For a DHCP-managed Ethernet interface, set `local_ip: auto`; the driver derives
 the current local IPv4 address from the route to the lidar. `lidar_ip` accepts a
 numeric address or a resolvable DNS/mDNS hostname, so a sensor lease can be
 addressed through a DHCP reservation or local DNS entry. The SDK does not expose
 a command that enables DHCP in the lidar firmware itself.
+
+Cloud, IMU and LaserScan publishers use best-effort sensor-data QoS by default,
+with independent profiles and depths. Standard ROS publisher QoS overrides are
+enabled as well. A reliable subscriber does not match a best-effort publisher,
+so consumers should normally use `SensorDataQoS` or override the relevant driver
+publisher to reliable.
 
 ### Composition
 
@@ -84,10 +93,10 @@ clock on arrival. Set `timestamp_source` explicitly to silence the warning.
   (about 10 kB, once) and holds the port until the process exits. Unloading the
   node from a running component container leaves the port claimed; use a fresh
   container to reload it.
-- **`work_mode` is stored in the lidar** and survives power cycles, so launching
-  with a `work_mode` that disagrees with `initialize_type` reconfigures the
-  device for the *other* transport. The driver warns when it spots this; pass
-  `set_work_mode: false` to leave the stored mode alone.
+- **`work_mode` is stored in the lidar** and survives power cycles.
+  `set_work_mode` therefore defaults to false. A mode that selects a different
+  transport from the active connection is rejected unless
+  `allow_work_mode_transport_switch` explicitly confirms the persistent switch.
 - The IMU quaternion is read as `(x, y, z, w)`, matching the SDK's own example
   output. Releases before 2.0.11 published the transform as `(w, x, y, z)` while
   publishing the message as `(x, y, z, w)`, so the two disagreed. Note the ROS 1
@@ -96,3 +105,6 @@ clock on arrival. Set `timestamp_source` explicitly to silence the warning.
   by `work_mode` bit 2 - are dropped rather than published, because tf2 rejects
   them. Without IMU data there is no `<imu_frame>_initial` -> `<imu_frame>`
   transform, so keep the rviz fixed frame on `cloud_frame`.
+- `imu_to_lidar_translation` and `imu_to_lidar_rotation` describe the sensor's
+  internal IMU-to-optical geometry. Put the sensor-to-robot mounting transform
+  in the robot URDF rather than folding it into these parameters.

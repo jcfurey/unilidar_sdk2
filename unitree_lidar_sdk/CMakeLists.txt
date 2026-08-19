@@ -10,10 +10,13 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(unitree_lidar_sdk
-  VERSION 2.0.11
+  VERSION 2.0.12
   DESCRIPTION "Unitree LiDAR L2 SDK"
   LANGUAGES CXX
 )
+
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
 
 # ---------------------------------------------------------------------------
 # Build configuration
@@ -36,7 +39,7 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(UNILIDAR_BUILD_EXAMPLES "Build the unilidar_sdk2 example programs" ON)
+option(UNILIDAR_BUILD_EXAMPLES "Build the unilidar_sdk2 example programs" OFF)
 
 # ---------------------------------------------------------------------------
 # Pre-built library
@@ -75,16 +78,12 @@ set_target_properties(unilidar::sdk2 PROPERTIES
   INTERFACE_LINK_LIBRARIES "Threads::Threads"
 )
 
-# Where a locally rebuilt archive would be written.
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/lib/${UNILIDAR_SDK_ARCH}")
-
 # ---------------------------------------------------------------------------
 # Examples
 # ---------------------------------------------------------------------------
 
 if(UNILIDAR_BUILD_EXAMPLES)
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin")
-
+  set(unilidar_example_targets)
   foreach(example
       example_lidar_udp
       example_lidar_serial
@@ -92,9 +91,44 @@ if(UNILIDAR_BUILD_EXAMPLES)
       set_to_serial_mode
       set_to_udp_mode)
     add_executable(${example} examples/${example}.cpp)
+    list(APPEND unilidar_example_targets ${example})
     target_link_libraries(${example} PRIVATE unilidar::sdk2)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       target_compile_options(${example} PRIVATE -Wall -Wextra)
     endif()
   endforeach()
+  install(TARGETS ${unilidar_example_targets} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
+
+# ---------------------------------------------------------------------------
+# Installation
+#
+# Both archives are installed so a binary SDK installation remains usable when
+# copied between x86_64 and aarch64 hosts. The generated package config chooses
+# the archive for the consuming toolchain and exports the same unilidar::sdk2
+# target used by this source tree.
+# ---------------------------------------------------------------------------
+
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/unilidar_sdk2)
+foreach(sdk_arch x86_64 aarch64)
+  install(
+    FILES "${PROJECT_SOURCE_DIR}/lib/${sdk_arch}/libunilidar_sdk2.a"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/unilidar_sdk2/${sdk_arch}")
+endforeach()
+
+configure_package_config_file(
+  cmake/unilidar_sdk2Config.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/unilidar_sdk2Config.cmake"
+  INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/unilidar_sdk2"
+)
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/unilidar_sdk2ConfigVersion.cmake"
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion
+)
+install(
+  FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/unilidar_sdk2Config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/unilidar_sdk2ConfigVersion.cmake"
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/unilidar_sdk2"
+)

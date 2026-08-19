@@ -35,48 +35,49 @@ find_package(Threads REQUIRED)
 # ---------------------------------------------------------------------------
 
 set(UNILIDAR_SDK_DIR "" CACHE PATH
-  "Path to the unitree_lidar_sdk directory. Defaults to the copy in this repository.")
+  "Path to the unitree_lidar_sdk directory. Empty prefers an installed CMake package.")
 if(NOT UNILIDAR_SDK_DIR)
-  # <repo>/unitree_lidar_ros2/src/unitree_lidar_ros2 -> <repo>/unitree_lidar_sdk
-  set(UNILIDAR_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../unitree_lidar_sdk")
+  find_package(unilidar_sdk2 CONFIG QUIET)
 endif()
-get_filename_component(UNILIDAR_SDK_DIR "${UNILIDAR_SDK_DIR}" ABSOLUTE)
-
-if(NOT UNILIDAR_SDK_ARCH)
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-    set(UNILIDAR_SDK_ARCH "x86_64")
-  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-    set(UNILIDAR_SDK_ARCH "aarch64")
-  else()
-    message(FATAL_ERROR
-      "unilidar_sdk2 ships pre-built libraries for x86_64 and aarch64 only, but "
-      "CMAKE_SYSTEM_PROCESSOR is '${CMAKE_SYSTEM_PROCESSOR}'. Set UNILIDAR_SDK_ARCH "
-      "manually if you know which archive to use.")
+if(NOT TARGET unilidar::sdk2)
+  if(NOT UNILIDAR_SDK_DIR)
+    # <repo>/unitree_lidar_ros2/src/unitree_lidar_ros2 -> <repo>/unitree_lidar_sdk
+    set(UNILIDAR_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../unitree_lidar_sdk")
   endif()
-endif()
+  get_filename_component(UNILIDAR_SDK_DIR "${UNILIDAR_SDK_DIR}" ABSOLUTE)
 
-set(UNILIDAR_SDK_LIBRARY "${UNILIDAR_SDK_DIR}/lib/${UNILIDAR_SDK_ARCH}/libunilidar_sdk2.a")
-set(UNILIDAR_SDK_INCLUDE_DIR "${UNILIDAR_SDK_DIR}/include")
+  if(NOT UNILIDAR_SDK_ARCH)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      set(UNILIDAR_SDK_ARCH "x86_64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+      set(UNILIDAR_SDK_ARCH "aarch64")
+    else()
+      message(FATAL_ERROR
+        "unilidar_sdk2 ships pre-built libraries for x86_64 and aarch64 only, but "
+        "CMAKE_SYSTEM_PROCESSOR is '${CMAKE_SYSTEM_PROCESSOR}'. Set UNILIDAR_SDK_ARCH "
+        "manually if you know which archive to use.")
+    endif()
+  endif()
 
-if(NOT EXISTS "${UNILIDAR_SDK_LIBRARY}")
-  message(FATAL_ERROR
-    "Cannot find the unilidar_sdk2 library at ${UNILIDAR_SDK_LIBRARY}. Point "
-    "UNILIDAR_SDK_DIR at your unitree_lidar_sdk checkout, for example: "
-    "colcon build --cmake-args -DUNILIDAR_SDK_DIR=/path/to/unitree_lidar_sdk")
-endif()
-if(NOT EXISTS "${UNILIDAR_SDK_INCLUDE_DIR}/unitree_lidar_sdk.h")
-  message(FATAL_ERROR "Cannot find the unilidar_sdk2 headers in ${UNILIDAR_SDK_INCLUDE_DIR}")
-endif()
+  set(UNILIDAR_SDK_LIBRARY "${UNILIDAR_SDK_DIR}/lib/${UNILIDAR_SDK_ARCH}/libunilidar_sdk2.a")
+  set(UNILIDAR_SDK_INCLUDE_DIR "${UNILIDAR_SDK_DIR}/include")
 
-# Imported target: consumers get the include path and the pthread dependency for
-# free, and CMake treats an imported target's includes as SYSTEM so the SDK
-# headers do not drown the build in warnings.
-add_library(unilidar::sdk2 STATIC IMPORTED)
-set_target_properties(unilidar::sdk2 PROPERTIES
-  IMPORTED_LOCATION "${UNILIDAR_SDK_LIBRARY}"
-  INTERFACE_INCLUDE_DIRECTORIES "${UNILIDAR_SDK_INCLUDE_DIR}"
-  INTERFACE_LINK_LIBRARIES "Threads::Threads"
-)
+  if(NOT EXISTS "${UNILIDAR_SDK_LIBRARY}")
+    message(FATAL_ERROR
+      "Cannot find the unilidar_sdk2 library at ${UNILIDAR_SDK_LIBRARY}. Install the SDK's "
+      "unilidar_sdk2 CMake package or point UNILIDAR_SDK_DIR at unitree_lidar_sdk.")
+  endif()
+  if(NOT EXISTS "${UNILIDAR_SDK_INCLUDE_DIR}/unitree_lidar_sdk.h")
+    message(FATAL_ERROR "Cannot find the unilidar_sdk2 headers in ${UNILIDAR_SDK_INCLUDE_DIR}")
+  endif()
+
+  add_library(unilidar::sdk2 STATIC IMPORTED)
+  set_target_properties(unilidar::sdk2 PROPERTIES
+    IMPORTED_LOCATION "${UNILIDAR_SDK_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${UNILIDAR_SDK_INCLUDE_DIR}"
+    INTERFACE_LINK_LIBRARIES "Threads::Threads"
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # Driver
@@ -138,6 +139,16 @@ if(BUILD_TESTING)
   if(TARGET test_driver_end_to_end)
     target_include_directories(test_driver_end_to_end PRIVATE include test)
     target_link_libraries(test_driver_end_to_end ${PROJECT_NAME}_component)
+  endif()
+
+  # Opens the real SDK serial path against a pseudo-terminal. Keep this in its
+  # own process because the pre-built SDK cannot release the serial descriptor.
+  if(UNIX AND NOT APPLE)
+    ament_add_gtest(test_driver_serial_smoke test/test_driver_serial_smoke.cpp TIMEOUT 30)
+    if(TARGET test_driver_serial_smoke)
+      target_include_directories(test_driver_serial_smoke PRIVATE include)
+      target_link_libraries(test_driver_serial_smoke ${PROJECT_NAME}_component)
+    endif()
   endif()
 endif()
 

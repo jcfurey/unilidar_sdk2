@@ -156,3 +156,33 @@ Prepares the SDK and the ROS 2 driver for ROS 2 Jazzy and Lyrical.
   actually open. `UnitreeLidarReader` also has no virtual destructor, so the
   reader cannot be deleted through the base pointer. The ROS 2 driver therefore
   holds the connection until the process exits.
+
+## v2.0.12 (2026.08.19)
+
+### SDK and packaging
+- The SDK installs its headers, both architecture archives and a relocatable
+  `unilidar_sdk2` CMake config exporting `unilidar::sdk2`.
+- Examples now default off and remain in the build tree instead of writing
+  binaries into the source checkout.
+- The reference 2D and 3D parsers treat a firmware range window of `0 .. 0` as
+  unspecified rather than dropping every return.
+- CI compiles and install-tests the SDK on native x86_64 and aarch64 runners.
+
+### ROS 2 driver
+- `transport: ethernet|serial` replaces the numeric `initialize_type`; the old
+  parameter remains as a deprecated compatibility override.
+- Persistent work-mode writes default off, the bitfield is constrained to its
+  five documented bits, and transport changes require an explicit confirmation.
+- Point cloud, IMU and LaserScan publishers have independent sensor-data QoS and
+  support standard ROS publisher QoS overrides.
+- `/diagnostics` reports stream rates, packet/data age, connection details and
+  hardware, firmware and SDK versions.
+- Empty or malformed 2D scan geometry is dropped instead of publishing an
+  invalid `LaserScan`, and the internal static transform now accepts a complete
+  quaternion as well as translation.
+- All ROS setup occurs before the connection is opened, reducing the chance that
+  a failed component construction strands the vendor SDK's unreleasable port.
+
+### Tests
+- 41 cases cover pure conversions, protocol/reference parsers, UDP publication,
+  diagnostics and a real 4 Mbaud SDK serial open against a pseudo-terminal.

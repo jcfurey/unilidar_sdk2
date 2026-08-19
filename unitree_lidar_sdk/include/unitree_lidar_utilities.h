@@ -196,8 +196,10 @@ inline void parseFromPacketToPointCloud(
         // calculate point range in float type
         range_float = packet.data.param.range_scale * ((float)ranges[j] + packet.data.param.range_bias);
 
-        // jump points beyond range limit
-        if ( range_float < packet.data.range_min || range_float > packet.data.range_max)
+        // Some firmware leaves its packet range window at 0 .. 0. Treat that as
+        // unspecified instead of dropping every otherwise valid return.
+        if (packet.data.range_max > packet.data.range_min &&
+            (range_float < packet.data.range_min || range_float > packet.data.range_max))
         {
             continue;
         }
@@ -288,8 +290,10 @@ inline void parseFromPacketPointCloud2D(
         // calculate point range in float type
         range_float = packet.data.param.range_scale * (ranges[j] + packet.data.param.range_bias);
 
-        // jump points beyond range limit
-        if (range_float < packet.data.range_min || range_float > packet.data.range_max)
+        // See the 3D parser above: 0 .. 0 means the firmware did not supply a
+        // packet-specific range window.
+        if (packet.data.range_max > packet.data.range_min &&
+            (range_float < packet.data.range_min || range_float > packet.data.range_max))
         {
             continue;
         }

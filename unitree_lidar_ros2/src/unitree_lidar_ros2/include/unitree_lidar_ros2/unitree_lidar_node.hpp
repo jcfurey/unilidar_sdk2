@@ -9,10 +9,12 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
@@ -36,8 +38,8 @@
 namespace unitree_lidar_ros2
 {
 
-/// How the connection to the lidar is opened. Matches the historical numbering
-/// of the `initialize_type` parameter.
+/// How the connection to the lidar is opened. Values retain the historical
+/// numbering of the deprecated `initialize_type` parameter.
 enum class ConnectionType : int
 {
   Serial = 1,
@@ -117,7 +119,8 @@ private:
   {
     ConnectionType connection{ConnectionType::Udp};
     int work_mode{0};
-    bool set_work_mode{true};
+    bool set_work_mode{false};
+    bool allow_work_mode_transport_switch{false};
 
     std::string serial_port{"/dev/ttyACM0"};
     int baudrate{4000000};
@@ -143,15 +146,22 @@ private:
     bool publish_imu_tf{true};
     bool publish_static_tf{true};
     std::vector<double> imu_to_lidar_translation{0.007698, 0.014655, -0.00667};
+    std::vector<double> imu_to_lidar_rotation{0.0, 0.0, 0.0, 1.0};
 
     bool start_rotation_on_startup{true};
     bool stop_rotation_on_shutdown{false};
 
-    std::string qos_profile{"default"};
-    int qos_depth{10};
+    std::string cloud_qos_profile{"sensor_data"};
+    int cloud_qos_depth{5};
+    std::string imu_qos_profile{"sensor_data"};
+    int imu_qos_depth{5};
+    std::string laserscan_qos_profile{"sensor_data"};
+    int laserscan_qos_depth{5};
 
     int idle_sleep_us{100};
     double watchdog_timeout{3.0};
+    std::string diagnostics_topic{"/diagnostics"};
+    double diagnostics_period{1.0};
   };
 
   void declareParameters();
@@ -167,6 +177,7 @@ private:
   void handleLaserScanPacket();
   void reportVersionsOnce();
   void checkLiveness();
+  void publishDiagnostics();
 
   /// Resolves the stamp to publish for a payload carrying @p sensor_stamp
   /// seconds since the epoch, honouring `timestamp_source` and simulated time.
@@ -181,9 +192,11 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_imu_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr pub_laserscan_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr pub_diagnostics_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr diagnostics_timer_;
 
   /// Field descriptors of the published cloud, built once.
   std::vector<sensor_msgs::msg::PointField> cloud_fields_;
@@ -201,6 +214,10 @@ private:
   /// Steady clock reading, in nanoseconds, of the last packet parsed. Written by
   /// the poll thread, read by the watchdog running on the executor.
   std::atomic<int64_t> last_packet_time_ns_{0};
+  std::atomic<int64_t> last_data_time_ns_{0};
+  std::atomic<int64_t> last_cloud_time_ns_{0};
+  std::atomic<int64_t> last_imu_time_ns_{0};
+  std::atomic<int64_t> last_laserscan_time_ns_{0};
   std::atomic<uint64_t> cloud_count_{0};
   std::atomic<uint64_t> imu_count_{0};
   std::atomic<uint64_t> laserscan_count_{0};
@@ -211,6 +228,11 @@ private:
   uint64_t reported_cloud_count_{0};
   uint64_t reported_imu_count_{0};
   uint64_t reported_laserscan_count_{0};
+
+  std::mutex version_mutex_;
+  std::string firmware_version_;
+  std::string hardware_version_;
+  std::string sdk_version_;
 
   /// Throttled logging must not depend on a ROS clock that may be paused or not
   /// yet publishing under simulated time.

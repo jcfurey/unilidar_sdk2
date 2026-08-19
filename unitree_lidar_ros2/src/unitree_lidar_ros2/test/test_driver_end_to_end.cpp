@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -60,7 +61,7 @@ protected:
     lidar_port_ = static_cast<uint16_t>(kFirstLidarPort + offset);
 
     const std::vector<rclcpp::Parameter> overrides{
-      rclcpp::Parameter("initialize_type", 2),
+      rclcpp::Parameter("transport", "ethernet"),
       // Exercise the DHCP-compatible path: resolve the sensor hostname and
       // derive the local bind address from the route to it.
       rclcpp::Parameter("local_ip", "auto"),
@@ -73,7 +74,10 @@ protected:
       rclcpp::Parameter("set_work_mode", false),
       rclcpp::Parameter("start_rotation_on_startup", false),
       rclcpp::Parameter("imu_to_lidar_translation", std::vector<double>{0.5, -0.25, 0.125}),
+      rclcpp::Parameter(
+        "imu_to_lidar_rotation", std::vector<double>{0.0, 0.0, 0.70710678, 0.70710678}),
       rclcpp::Parameter("watchdog_timeout", 0.0),
+      rclcpp::Parameter("diagnostics_period", 0.1),
     };
 
     rclcpp::NodeOptions options;
@@ -82,14 +86,21 @@ protected:
     driver_ = std::make_shared<unitree_lidar_ros2::UnitreeLidarNode>(options);
     listener_ = std::make_shared<rclcpp::Node>("e2e_listener_" + std::to_string(offset));
     executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(driver_);
     executor_->add_node(listener_);
 
     imu_subscription_ = listener_->create_subscription<sensor_msgs::msg::Imu>(
-      "unilidar/imu", 10,
+      "unilidar/imu", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::Imu::SharedPtr msg) {imu_messages_.push_back(*msg);});
     cloud_subscription_ = listener_->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "unilidar/cloud", 10,
+      "unilidar/cloud", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) {cloud_messages_.push_back(*msg);});
+    diagnostics_subscription_ =
+      listener_->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+      "/diagnostics", 10,
+      [this](diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg) {
+        diagnostic_messages_.push_back(*msg);
+      });
     tf_subscription_ = listener_->create_subscription<tf2_msgs::msg::TFMessage>(
       "/tf", 10,
       [this](tf2_msgs::msg::TFMessage::SharedPtr msg) {tf_messages_.push_back(*msg);});
@@ -105,6 +116,9 @@ protected:
   void TearDown() override
   {
     // Drop the driver first so its reader thread is joined while the context lives.
+    if (executor_ && driver_) {
+      executor_->remove_node(driver_);
+    }
     driver_.reset();
     if (executor_ && listener_) {
       executor_->remove_node(listener_);
@@ -138,11 +152,14 @@ protected:
 
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
+  rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
+    diagnostics_subscription_;
   rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_subscription_;
   rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr static_tf_subscription_;
 
   std::vector<sensor_msgs::msg::Imu> imu_messages_;
   std::vector<sensor_msgs::msg::PointCloud2> cloud_messages_;
+  std::vector<diagnostic_msgs::msg::DiagnosticArray> diagnostic_messages_;
   std::vector<tf2_msgs::msg::TFMessage> tf_messages_;
   std::vector<tf2_msgs::msg::TFMessage> static_tf_messages_;
 };
@@ -238,6 +255,28 @@ TEST_F(DriverFixture, PublishesAPclCompatiblePointCloud)
   }
 }
 
+TEST_F(DriverFixture, PublishesStandardDiagnosticsForValidData)
+{
+  auto packet = unitree_lidar_ros2::test::makeImuPacket();
+  ASSERT_TRUE(sender_->send(packet, LIDAR_IMU_DATA_PACKET_TYPE));
+
+  ASSERT_TRUE(spinUntil([this] {
+      for (const auto & message : diagnostic_messages_) {
+        if (!message.status.empty() &&
+        message.status.front().level == diagnostic_msgs::msg::DiagnosticStatus::OK)
+        {
+          return true;
+        }
+      }
+      return false;
+    })) << "no healthy diagnostic report arrived";
+
+  const auto & status = diagnostic_messages_.back().status.front();
+  EXPECT_EQ(status.message, "Streaming");
+  EXPECT_EQ(status.hardware_id, "unitree_l2");
+  EXPECT_FALSE(status.values.empty());
+}
+
 TEST_F(DriverFixture, PublishesTheMountingOffsetOnceAsAStaticTransform)
 {
   ASSERT_TRUE(spinUntil([this] {return !static_tf_messages_.empty();}))
@@ -250,7 +289,8 @@ TEST_F(DriverFixture, PublishesTheMountingOffsetOnceAsAStaticTransform)
   EXPECT_NEAR(transform.transform.translation.x, 0.5, 1e-9);
   EXPECT_NEAR(transform.transform.translation.y, -0.25, 1e-9);
   EXPECT_NEAR(transform.transform.translation.z, 0.125, 1e-9);
-  EXPECT_NEAR(transform.transform.rotation.w, 1.0, 1e-9);
+  EXPECT_NEAR(transform.transform.rotation.z, 0.70710678, 1e-8);
+  EXPECT_NEAR(transform.transform.rotation.w, 0.70710678, 1e-8);
 }
 
 // All zeros is what the lidar sends when its IMU is disabled by work_mode bit 2.

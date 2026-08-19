@@ -119,6 +119,16 @@ TEST(ReferenceParser3d, HonoursTheCallersRangeLimits)
   EXPECT_NEAR(cloud.points.back().y, 4.0f, 1e-5);
 }
 
+TEST(ReferenceParser3d, TreatsAnEmptyPacketRangeAsUnspecified)
+{
+  auto packet = makeIdentityPacket(3);
+  packet.data.range_min = 0.0f;
+  packet.data.range_max = 0.0f;
+  unilidar_sdk2::PointCloudUnitree cloud{};
+  unilidar_sdk2::parseFromPacketToPointCloud(cloud, packet, false, 0.0f, 1000.0f);
+  EXPECT_EQ(cloud.points.size(), 3u);
+}
+
 TEST(ReferenceParser3d, StartsFromAnEmptyCloudOnEveryCall)
 {
   const auto packet = makeIdentityPacket(2);
@@ -152,6 +162,16 @@ TEST(ReferenceParser2d, PlacesReturnsInTheYzPlane)
   }
   EXPECT_NEAR(cloud.points[0].y, 1.0f, 1e-5);
   EXPECT_NEAR(cloud.points[1].y, 2.0f, 1e-5);
+}
+
+TEST(ReferenceParser2d, TreatsAnEmptyPacketRangeAsUnspecified)
+{
+  auto packet = make2dPacket(3);
+  packet.data.range_min = 0.0f;
+  packet.data.range_max = 0.0f;
+  unilidar_sdk2::PointCloudUnitree cloud{};
+  unilidar_sdk2::parseFromPacketPointCloud2D(cloud, packet, false, 0.0f, 1000.0f);
+  EXPECT_EQ(cloud.points.size(), 3u);
 }
 
 // The protocol structs are overlaid on received bytes, so their layout is part of

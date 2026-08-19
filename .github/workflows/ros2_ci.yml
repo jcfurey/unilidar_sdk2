@@ -122,12 +122,12 @@ jobs:
           fi
 
   sdk:
-    name: sdk (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: sdk (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        runner: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v4
 
@@ -136,5 +136,54 @@ jobs:
         working-directory: unitree_lidar_sdk
         run: |
           set -ex
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUNILIDAR_BUILD_EXAMPLES=ON
           cmake --build build -j"$(nproc)"
+
+      - name: Check the installed CMake package
+        shell: bash
+        working-directory: unitree_lidar_sdk
+        run: |
+          set -ex
+          cmake --install build --prefix "$PWD/staging"
+          cmake -S test/package_consumer -B consumer-build \
+            -DCMAKE_PREFIX_PATH="$PWD/staging"
+          cmake --build consumer-build -j"$(nproc)"
+
+  sanitizers:
+    name: parser sanitizers (jazzy)
+    runs-on: ubuntu-24.04
+    container: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -ex
+          apt-get update
+          rosdep update --rosdistro jazzy
+          rosdep install --from-paths unitree_lidar_ros2/src --ignore-src -y \
+            --rosdistro jazzy
+
+      - name: Build with address and undefined-behavior sanitizers
+        shell: bash
+        working-directory: unitree_lidar_ros2
+        run: |
+          set -ex
+          source /opt/ros/jazzy/setup.bash
+          colcon build --event-handlers console_direct+ --cmake-args \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Exercise protocol and conversion tests under sanitizers
+        shell: bash
+        working-directory: unitree_lidar_ros2
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          set -ex
+          source install/setup.bash
+          colcon test --event-handlers console_direct+ --return-code-on-test-failure \
+            --ctest-args -R 'test_(point_cloud_layout|conversions|sdk_reference_parsers)'

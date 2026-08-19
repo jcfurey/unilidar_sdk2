@@ -123,6 +123,18 @@ inline RangeWindow resolveRangeWindow(
   return window;
 }
 
+/// True when the metadata needed to construct a valid LaserScan is finite and
+/// the raw-to-metre scale is usable.
+inline bool validLaserScanMetadata(const unilidar_sdk2::Lidar2DPointData & data)
+{
+  return std::isfinite(data.angle_min) && std::isfinite(data.angle_increment) &&
+         std::isfinite(data.time_increment) && data.time_increment >= 0.0f &&
+         std::isfinite(data.scan_period) && data.scan_period >= 0.0f &&
+         std::isfinite(data.param.alpha_angle_bias) &&
+         std::isfinite(data.param.range_scale) && data.param.range_scale > 0.0f &&
+         std::isfinite(data.param.range_bias);
+}
+
 /**
  * @brief Converts one raw 2D range reading to metres.
  *
@@ -140,7 +152,7 @@ inline float convertScanRange(
   }
 
   const float range = param.range_scale * (static_cast<float>(raw) + param.range_bias);
-  if (range < window.min || range > window.max) {
+  if (!std::isfinite(range) || range < window.min || range > window.max) {
     return invalid;
   }
   return range;
