@@ -96,6 +96,9 @@ Prepares the SDK and the ROS 2 driver for ROS 2 Jazzy and Lyrical.
   longer depends on PCL and no longer copies each cloud through a
   `pcl::PointCloud`. The binary layout is unchanged.
 - `lidar_ip` and `local_ip` had their default values swapped.
+- `lidar_ip` now accepts DNS/mDNS hostnames, and `local_ip: auto` derives the
+  host address selected by the route. This supports host and sensor addresses
+  managed by DHCP without hard-coding the current host lease in the driver.
 - New parameters: `set_work_mode`, `laserscan_topic`, `laserscan_frame`,
   `publish_imu_tf`, `publish_static_tf`, `imu_to_lidar_translation`,
   `start_rotation_on_startup`, `stop_rotation_on_shutdown`, `qos_profile`,

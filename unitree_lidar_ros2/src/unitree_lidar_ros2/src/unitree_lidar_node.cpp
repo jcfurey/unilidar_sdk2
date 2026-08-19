@@ -4,10 +4,18 @@
 
 #include "unitree_lidar_ros2/unitree_lidar_node.hpp"
 
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cinttypes>
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -34,6 +42,81 @@ constexpr int64_t kThrottleMs = 5000;
 
 /// Bit 3 of the lidar work mode selects serial instead of ethernet.
 constexpr uint32_t kWorkModeSerialBit = 1u << 3;
+
+std::string resolveIpv4Address(const std::string & host, int port)
+{
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_protocol = IPPROTO_UDP;
+
+  addrinfo * raw_addresses = nullptr;
+  const std::string service = std::to_string(port);
+  const int result = getaddrinfo(host.c_str(), service.c_str(), &hints, &raw_addresses);
+  if (result != 0) {
+    throw std::runtime_error(
+      "Failed to resolve IPv4 address '" + host + "': " + gai_strerror(result));
+  }
+  const std::unique_ptr<addrinfo, decltype(& freeaddrinfo)> addresses(
+    raw_addresses, freeaddrinfo);
+
+  const auto * address = reinterpret_cast<const sockaddr_in *>(addresses->ai_addr);
+  char numeric_address[INET_ADDRSTRLEN]{};
+  if (inet_ntop(AF_INET, &address->sin_addr, numeric_address, sizeof(numeric_address)) == nullptr) {
+    throw std::runtime_error(
+      "Failed to format resolved IPv4 address for '" + host + "': " + std::strerror(errno));
+  }
+  return numeric_address;
+}
+
+std::string selectLocalIpv4Address(const std::string & remote_ip, int remote_port)
+{
+  const int socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (socket_fd < 0) {
+    throw std::runtime_error(
+      "Failed to create a UDP socket while selecting the local address: " +
+      std::string(std::strerror(errno)));
+  }
+
+  sockaddr_in remote_address{};
+  remote_address.sin_family = AF_INET;
+  remote_address.sin_port = htons(static_cast<uint16_t>(remote_port));
+  if (inet_pton(AF_INET, remote_ip.c_str(), &remote_address.sin_addr) != 1) {
+    close(socket_fd);
+    throw std::runtime_error("Resolved lidar address is not IPv4: " + remote_ip);
+  }
+
+  if (connect(
+      socket_fd, reinterpret_cast<const sockaddr *>(&remote_address),
+      sizeof(remote_address)) != 0)
+  {
+    const std::string error = std::strerror(errno);
+    close(socket_fd);
+    throw std::runtime_error(
+      "Failed to select a route to lidar at " + remote_ip + ":" +
+      std::to_string(remote_port) + ": " + error);
+  }
+
+  sockaddr_in local_address{};
+  socklen_t local_address_size = sizeof(local_address);
+  if (getsockname(
+      socket_fd, reinterpret_cast<sockaddr *>(&local_address), &local_address_size) != 0)
+  {
+    const std::string error = std::strerror(errno);
+    close(socket_fd);
+    throw std::runtime_error("Failed to read the selected local address: " + error);
+  }
+  close(socket_fd);
+
+  char numeric_address[INET_ADDRSTRLEN]{};
+  if (inet_ntop(
+      AF_INET, &local_address.sin_addr, numeric_address, sizeof(numeric_address)) == nullptr)
+  {
+    throw std::runtime_error(
+      "Failed to format the selected local IPv4 address: " + std::string(std::strerror(errno)));
+  }
+  return numeric_address;
+}
 
 rcl_interfaces::msg::ParameterDescriptor describe(
   const std::string & description, bool read_only = false)
@@ -226,11 +309,16 @@ void UnitreeLidarNode::declareParameters()
   params_.lidar_port = declare_parameter<int>(
     "lidar_port", 6101, describeIntRange("UDP port the lidar sends from.", 1, 65535, true));
   params_.lidar_ip = declare_parameter<std::string>(
-    "lidar_ip", "192.168.1.62", describe("IP address of the lidar.", true));
+    "lidar_ip", "192.168.1.62",
+    describe("IPv4 address or resolvable hostname of the lidar.", true));
   params_.local_port = declare_parameter<int>(
     "local_port", 6201, describeIntRange("UDP port this host receives on.", 1, 65535, true));
   params_.local_ip = declare_parameter<std::string>(
-    "local_ip", "192.168.1.2", describe("IP address of this host's interface.", true));
+    "local_ip", "192.168.1.2",
+    describe(
+      "IPv4 address of this host's interface, or 'auto' to select it from the route to lidar_ip. "
+      "Use 'auto' when the host address comes from DHCP.",
+      true));
 
   params_.cloud_scan_num = declare_parameter<int>(
     "cloud_scan_num", 18,
@@ -364,6 +452,12 @@ void UnitreeLidarNode::openLidar()
       break;
 
     case ConnectionType::Udp:
+      params_.lidar_ip = resolveIpv4Address(params_.lidar_ip, params_.lidar_port);
+      if (params_.local_ip.empty() || params_.local_ip == "auto") {
+        params_.local_ip = selectLocalIpv4Address(params_.lidar_ip, params_.lidar_port);
+      } else {
+        params_.local_ip = resolveIpv4Address(params_.local_ip, params_.local_port);
+      }
       RCLCPP_INFO(
         get_logger(), "Opening lidar at %s:%d, listening on %s:%d",
         params_.lidar_ip.c_str(), params_.lidar_port,

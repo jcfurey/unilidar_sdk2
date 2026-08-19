@@ -27,8 +27,10 @@
     serial_port: "/dev/ttyACM0"
     baudrate: 4000000
 
-    # Ethernet, used when initialize_type is 2. The lidar ships on
-    # 192.168.1.62 and expects this host to be 192.168.1.2.
+    # Ethernet, used when initialize_type is 2. lidar_ip may also be a DNS/mDNS
+    # hostname for a DHCP lease. Set local_ip to "auto" when the host interface
+    # address is assigned by DHCP; the driver selects the source address from
+    # the route to lidar_ip. The factory-static pair is shown below.
     lidar_ip: "192.168.1.62"
     lidar_port: 6101
     local_ip: "192.168.1.2"

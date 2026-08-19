@@ -61,9 +61,11 @@ protected:
 
     const std::vector<rclcpp::Parameter> overrides{
       rclcpp::Parameter("initialize_type", 2),
-      rclcpp::Parameter("local_ip", "127.0.0.1"),
+      // Exercise the DHCP-compatible path: resolve the sensor hostname and
+      // derive the local bind address from the route to it.
+      rclcpp::Parameter("local_ip", "auto"),
       rclcpp::Parameter("local_port", static_cast<int>(local_port_)),
-      rclcpp::Parameter("lidar_ip", "127.0.0.1"),
+      rclcpp::Parameter("lidar_ip", "localhost"),
       rclcpp::Parameter("lidar_port", static_cast<int>(lidar_port_)),
       // One scan line per cloud, so a single packet produces a message.
       rclcpp::Parameter("cloud_scan_num", 1),

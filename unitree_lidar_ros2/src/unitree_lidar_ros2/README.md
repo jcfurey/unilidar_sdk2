@@ -55,6 +55,12 @@ the same descriptions at run time.
 The lidar ships in ethernet mode on `192.168.1.62` and expects this host to be
 `192.168.1.2`. For serial, set `initialize_type: 1`.
 
+For a DHCP-managed Ethernet interface, set `local_ip: auto`; the driver derives
+the current local IPv4 address from the route to the lidar. `lidar_ip` accepts a
+numeric address or a resolvable DNS/mDNS hostname, so a sensor lease can be
+addressed through a DHCP reservation or local DNS entry. The SDK does not expose
+a command that enables DHCP in the lidar firmware itself.
+
 ### Composition
 
 The driver is also a composable node, `unitree_lidar_ros2::UnitreeLidarNode`.
