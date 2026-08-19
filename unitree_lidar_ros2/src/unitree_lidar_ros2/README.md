@@ -58,6 +58,33 @@ The lidar ships in ethernet mode on `192.168.1.62` and expects this host to be
 `192.168.1.2`. For serial, set `transport: serial`. The old numeric
 `initialize_type` parameter remains as a deprecated compatibility override.
 
+### Switching the stored transport
+
+The USB serial adapter can enumerate even when the LiDAR is still configured
+for Ethernet. In that state the serial port opens normally but receives no
+bytes. Transport is bit 3 of the persistent `work_mode` value and changes only
+after the LiDAR is power-cycled.
+
+While Ethernet is still active, program the standard 3D + IMU + automatic-start
+serial mode with:
+
+```bash
+ros2 launch unitree_lidar_ros2 launch.py \
+  rviz:=false program_work_mode:=8
+```
+
+Wait for `Lidar connected`, stop the process, fully power the LiDAR off for
+several seconds, and power it back on with the USB/serial cable connected. Then
+set `transport: serial` and the stable `/dev/serial/by-id/...` path in the
+parameter file and launch normally. To switch back, connect over serial and run
+the same command with `program_work_mode:=0`, then power-cycle again.
+
+`program_work_mode` defaults to `-1`, which performs no write. Passing a value
+from 0 through 31 is an explicit request to persist it and authorizes a change
+to the other transport. Do not leave this argument enabled in a normal robot
+launch. Bits 0 through 4 select wide FOV, 2D mode, disabled IMU, serial
+transport, and wait-for-start respectively; bits 5 through 31 are reserved.
+
 For a DHCP-managed Ethernet interface, set `local_ip: auto`; the driver derives
 the current local IPv4 address from the route to the lidar. `lidar_ip` accepts a
 numeric address or a resolvable DNS/mDNS hostname, so a sensor lease can be
