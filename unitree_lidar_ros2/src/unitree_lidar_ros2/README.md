@@ -14,11 +14,11 @@ check disagrees with sources formatted for Jazzy and newer.
 
 | Topic | Type | Notes |
 |---|---|---|
-| `unilidar/cloud` | `sensor_msgs/PointCloud2` | Fields `x`, `y`, `z`, `intensity`, `ring` (uint16), `time` (float32, seconds relative to the header stamp), `point_step` 32. |
+| `unilidar/cloud` | `sensor_msgs/PointCloud2` | Fields `x`, `y`, `z`, `intensity`, `ring` (uint16, zero-based scan-line index), `time` (float32 seconds relative to the header stamp), `point_step` 32. |
 | `unilidar/imu` | `sensor_msgs/Imu` | Orientation, angular velocity and linear acceleration. |
 | `unilidar/laserscan` | `sensor_msgs/LaserScan` | Only when the lidar runs in 2D mode (`work_mode` bit 1). |
-| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | Connection, per-stream rate, data age and version health. |
-| `/tf` | `tf2_msgs/TFMessage` | `<imu_frame>_initial` -> `<imu_frame>` from the IMU orientation. |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | Stream rates/ages, cloud span/size, packet gaps, SDK backlog, discarded data and versions. |
+| `/tf` | `tf2_msgs/TFMessage` | Optional `<imu_frame>_initial` -> `<imu_frame>` from raw IMU orientation; disabled by default. |
 | `/tf_static` | `tf2_msgs/TFMessage` | `<imu_frame>` -> `<cloud_frame>` mounting offset, published once. |
 
 The point cloud layout is byte for byte what earlier releases produced through
@@ -77,11 +77,28 @@ Loading it into the same container as whatever consumes the cloud lets each scan
 pass by intra-process delivery rather than being serialised over loopback
 (~160 kB per cloud). See `launch/composed_launch.py`.
 
-### Simulated time
+### Timestamps and mapping
 
-With `use_sim_time` enabled, the lidar's own wall-clock stamps are meaningless,
-so `timestamp_source` is forced to `ros` and messages are stamped from the node
-clock on arrival. Set `timestamp_source` explicitly to silence the warning.
+`timestamp_mode: device` is the mapping default. Cloud, IMU and LaserScan use the
+integer seconds/nanoseconds clock carried by their packets, and the driver asks
+the lidar to synchronise that clock to the host once at startup. This keeps
+cloud headers, IMU samples and every point's relative `time` in one clock domain.
+
+`timestamp_mode: arrival` instead samples the node clock per packet. Cloud and
+LaserScan stamps are shifted back by their scan period so their headers still
+denote the first measurement, and accumulated point offsets remain relative to
+the cloud header. Arrival mode avoids an unsynchronised device clock but includes
+transport and scheduling jitter. `use_sim_time` forces this mode.
+
+The old `use_system_timestamp` and `timestamp_source` parameters remain available
+through `timestamp_mode: auto`, but are deprecated.
+
+The driver preserves per-point timing; it does not motion-compensate points.
+Mapping frontends must deskew with synchronised IMU/odometry. Larger
+`cloud_scan_num` values increase the interval that needs deskewing. The accepted
+range is 1..1000, but at 300 possible points per line the upper limit can produce
+a 300,000-point, 9.6 MB cloud and should be treated as a guardrail rather than an
+operating recommendation.
 
 ## Notes and known limitations
 
@@ -103,8 +120,16 @@ clock on arrival. Set `timestamp_source` explicitly to silence the warning.
   package in this repository still uses `(w, x, y, z)` for both.
 - IMU samples whose quaternion is degenerate - all zeros when the IMU is disabled
   by `work_mode` bit 2 - are dropped rather than published, because tf2 rejects
-  them. Without IMU data there is no `<imu_frame>_initial` -> `<imu_frame>`
-  transform, so keep the rviz fixed frame on `cloud_frame`.
+  them. IMU covariances are configurable; their default all-zero values mean
+  unknown. The vendor documentation does not state the quaternion's inertial
+  world convention, so validate its axes on hardware before feeding orientation
+  into a mapping filter.
+- `publish_imu_tf` defaults to false. A robot state estimator should own dynamic
+  world/odom transforms. Enable the raw `<imu_frame>_initial` -> `<imu_frame>`
+  transform only for explicit compatibility or visualisation use.
 - `imu_to_lidar_translation` and `imu_to_lidar_rotation` describe the sensor's
   internal IMU-to-optical geometry. Put the sensor-to-robot mounting transform
   in the robot URDF rather than folding it into these parameters.
+- The driver discards the opaque SDK's malformed first point cloud, accumulates
+  one-line SDK output itself, assigns zero-based rings, and drops a partial cloud
+  when the point-packet sequence has a gap or moves backwards.

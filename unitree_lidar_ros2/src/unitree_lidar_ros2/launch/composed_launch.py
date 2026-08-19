@@ -36,7 +36,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'use_sim_time',
             default_value='false',
-            description='Take time from /clock. Forces timestamp_source to "ros".',
+            description='Take time from /clock. Forces unified arrival timestamp mode.',
         ),
     ]
 

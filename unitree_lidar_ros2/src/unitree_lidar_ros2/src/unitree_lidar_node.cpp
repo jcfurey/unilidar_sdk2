@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -220,16 +221,37 @@ std::string formatAge(int64_t now_ns, int64_t then_ns)
   return text;
 }
 
-TimestampSource parseTimestampSource(const std::string & name)
+std::string formatSeconds(double seconds)
 {
-  if (name == "sensor" || name == "lidar") {
-    return TimestampSource::Sensor;
+  char text[32]{};
+  std::snprintf(text, sizeof(text), "%.6f", std::max(0.0, seconds));
+  return text;
+}
+
+TimestampMode parseTimestampMode(const std::string & name)
+{
+  if (name == "device" || name == "sensor" || name == "lidar") {
+    return TimestampMode::Device;
   }
-  if (name == "ros" || name == "now") {
-    return TimestampSource::Ros;
+  if (name == "arrival" || name == "ros" || name == "now") {
+    return TimestampMode::Arrival;
   }
   throw std::invalid_argument(
-    "timestamp_source must be 'sensor' or 'ros', got '" + name + "'");
+    "timestamp_mode must be 'device' or 'arrival', got '" + name + "'");
+}
+
+void validateCovariance(const std::string & name, const std::vector<double> & covariance)
+{
+  if (covariance.size() != 9) {
+    throw std::invalid_argument(
+            name + " must have exactly 9 elements, got " + std::to_string(covariance.size()));
+  }
+  if (!std::all_of(covariance.begin(), covariance.end(), [](double value) {
+      return std::isfinite(value);
+    }))
+  {
+    throw std::invalid_argument(name + " must contain only finite values");
+  }
 }
 
 std::vector<sensor_msgs::msg::PointField> buildCloudFields()
@@ -273,14 +295,32 @@ UnitreeLidarNode::UnitreeLidarNode(const rclcpp::NodeOptions & options)
 
   declareParameters();
 
-  timestamp_source_ = parseTimestampSource(params_.timestamp_source);
-  if (use_sim_time_ && timestamp_source_ == TimestampSource::Sensor) {
+  if (params_.timestamp_mode == "auto") {
+    if (params_.timestamp_source != "sensor" && params_.timestamp_source != "lidar" &&
+      params_.timestamp_source != "ros" && params_.timestamp_source != "now")
+    {
+      throw std::invalid_argument(
+              "timestamp_source must be 'sensor' or 'ros', got '" +
+              params_.timestamp_source + "'");
+    }
+    const bool legacy_arrival =
+      params_.timestamp_source == "ros" || params_.timestamp_source == "now" ||
+      params_.use_system_timestamp;
+    timestamp_mode_ = legacy_arrival ? TimestampMode::Arrival : TimestampMode::Device;
     RCLCPP_WARN(
       get_logger(),
-      "use_sim_time is enabled but timestamp_source is 'sensor'. The lidar stamps come from a "
-      "wall clock and are meaningless against simulated time, so 'ros' is used instead. Set "
-      "timestamp_source explicitly to silence this warning.");
-    timestamp_source_ = TimestampSource::Ros;
+      "timestamp_mode is 'auto'; deriving '%s' from deprecated use_system_timestamp and "
+      "timestamp_source parameters. Set timestamp_mode explicitly.",
+      timestamp_mode_ == TimestampMode::Device ? "device" : "arrival");
+  } else {
+    timestamp_mode_ = parseTimestampMode(params_.timestamp_mode);
+  }
+  if (use_sim_time_ && timestamp_mode_ == TimestampMode::Device) {
+    RCLCPP_WARN(
+      get_logger(),
+      "use_sim_time is enabled but timestamp_mode is 'device'. Device wall-clock stamps are "
+      "meaningless against simulated time, so 'arrival' is used instead.");
+    timestamp_mode_ = TimestampMode::Arrival;
   }
 
   createInterfaces();
@@ -309,11 +349,11 @@ UnitreeLidarNode::UnitreeLidarNode(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(
     get_logger(),
     "Publishing cloud on '%s' (frame '%s'), imu on '%s' (frame '%s'), 2d scan on '%s' "
-    "(frame '%s'); timestamp_source=%s, qos cloud=%s/%d imu=%s/%d scan=%s/%d",
+    "(frame '%s'); timestamp_mode=%s, qos cloud=%s/%d imu=%s/%d scan=%s/%d",
     params_.cloud_topic.c_str(), params_.cloud_frame.c_str(),
     params_.imu_topic.c_str(), params_.imu_frame.c_str(),
     params_.laserscan_topic.c_str(), params_.laserscan_frame.c_str(),
-    timestamp_source_ == TimestampSource::Sensor ? "sensor" : "ros",
+    timestamp_mode_ == TimestampMode::Device ? "device" : "arrival",
     params_.cloud_qos_profile.c_str(), params_.cloud_qos_depth,
     params_.imu_qos_profile.c_str(), params_.imu_qos_depth,
     params_.laserscan_qos_profile.c_str(), params_.laserscan_qos_depth);
@@ -403,15 +443,27 @@ void UnitreeLidarNode::declareParameters()
   params_.cloud_scan_num = declare_parameter<int>(
     "cloud_scan_num", 18,
     describeIntRange("Number of scan lines accumulated into one published cloud.", 1, 1000, true));
+  params_.timestamp_mode = declare_parameter<std::string>(
+    "timestamp_mode", "auto",
+    describe(
+      "Unified stamp policy for cloud, IMU and LaserScan: 'device' uses the integer packet "
+      "clock; 'arrival' uses the node clock and preserves scan-start semantics; 'auto' maps the "
+      "deprecated timestamp parameters.",
+      true));
+  params_.sync_sensor_clock_on_startup = declare_parameter<bool>(
+    "sync_sensor_clock_on_startup", true,
+    describe(
+      "Send the host CLOCK_REALTIME to the lidar once at startup when timestamp_mode is 'device'.",
+      true));
   params_.use_system_timestamp = declare_parameter<bool>(
     "use_system_timestamp", true,
     describe(
-      "Have the SDK stamp clouds with this host's clock instead of the lidar's own clock.", true));
+      "Deprecated. Used only by timestamp_mode 'auto'; true selects unified arrival stamps.",
+      true));
   params_.timestamp_source = declare_parameter<std::string>(
     "timestamp_source", "sensor",
     describe(
-      "'sensor' publishes the stamp carried by the lidar data, 'ros' stamps messages from the node "
-      "clock when they are received. Forced to 'ros' when use_sim_time is enabled.",
+      "Deprecated. Used only by timestamp_mode 'auto'; 'ros' selects unified arrival stamps.",
       true));
   params_.range_min = declare_parameter<double>(
     "range_min", 0.0,
@@ -435,8 +487,11 @@ void UnitreeLidarNode::declareParameters()
     "laserscan_topic", "unilidar/laserscan", describe("2D LaserScan topic.", true));
 
   params_.publish_imu_tf = declare_parameter<bool>(
-    "publish_imu_tf", true,
-    describe("Broadcast <imu_frame>_initial -> <imu_frame> from the IMU orientation.", true));
+    "publish_imu_tf", false,
+    describe(
+      "Broadcast <imu_frame>_initial -> <imu_frame> from raw IMU orientation. Normally false: a "
+      "state estimator should own the robot's dynamic world/odom transforms.",
+      true));
   params_.publish_static_tf = declare_parameter<bool>(
     "publish_static_tf", true,
     describe("Broadcast the static <imu_frame> -> <cloud_frame> mounting offset.", true));
@@ -446,6 +501,15 @@ void UnitreeLidarNode::declareParameters()
   params_.imu_to_lidar_rotation = declare_parameter<std::vector<double>>(
     "imu_to_lidar_rotation", params_.imu_to_lidar_rotation,
     describe("Rotation from the IMU frame to the cloud frame as [x, y, z, w].", true));
+  params_.orientation_covariance = declare_parameter<std::vector<double>>(
+    "orientation_covariance", params_.orientation_covariance,
+    describe("Row-major 3x3 IMU orientation covariance. All zeros means unknown.", true));
+  params_.angular_velocity_covariance = declare_parameter<std::vector<double>>(
+    "angular_velocity_covariance", params_.angular_velocity_covariance,
+    describe("Row-major 3x3 angular-velocity covariance. All zeros means unknown.", true));
+  params_.linear_acceleration_covariance = declare_parameter<std::vector<double>>(
+    "linear_acceleration_covariance", params_.linear_acceleration_covariance,
+    describe("Row-major 3x3 linear-acceleration covariance. All zeros means unknown.", true));
 
   params_.start_rotation_on_startup = declare_parameter<bool>(
     "start_rotation_on_startup", true,
@@ -535,6 +599,9 @@ void UnitreeLidarNode::declareParameters()
   for (double & component : params_.imu_to_lidar_rotation) {
     component /= rotation_norm;
   }
+  validateCovariance("orientation_covariance", params_.orientation_covariance);
+  validateCovariance("angular_velocity_covariance", params_.angular_velocity_covariance);
+  validateCovariance("linear_acceleration_covariance", params_.linear_acceleration_covariance);
 
   if (params_.set_work_mode) {
     const uint32_t work_mode = static_cast<uint32_t>(params_.work_mode);
@@ -614,8 +681,10 @@ void UnitreeLidarNode::openLidar()
       result = lidar_->initializeSerial(
         params_.serial_port,
         static_cast<uint32_t>(params_.baudrate),
-        static_cast<uint16_t>(params_.cloud_scan_num),
-        params_.use_system_timestamp,
+        // Keep the opaque SDK's accumulator to one line. The driver owns the
+        // multi-line cloud so timestamps, packet gaps and rings stay coherent.
+        1u,
+        false,
         static_cast<float>(params_.range_min),
         static_cast<float>(params_.range_max));
       if (result != 0) {
@@ -636,8 +705,8 @@ void UnitreeLidarNode::openLidar()
         params_.lidar_ip,
         static_cast<uint16_t>(params_.local_port),
         params_.local_ip,
-        static_cast<uint16_t>(params_.cloud_scan_num),
-        params_.use_system_timestamp,
+        1u,
+        false,
         static_cast<float>(params_.range_min),
         static_cast<float>(params_.range_max));
       if (result != 0) {
@@ -656,6 +725,11 @@ void UnitreeLidarNode::openLidar()
 
   if (params_.set_work_mode) {
     lidar_->setLidarWorkMode(static_cast<uint32_t>(params_.work_mode));
+  }
+
+  if (timestamp_mode_ == TimestampMode::Device && params_.sync_sensor_clock_on_startup) {
+    RCLCPP_INFO(get_logger(), "Synchronising the lidar clock to this host");
+    lidar_->syncLidarTimeStamp();
   }
 
   if (params_.start_rotation_on_startup) {
@@ -702,6 +776,8 @@ void UnitreeLidarNode::pollLoop()
     int packet_type = 0;
     try {
       packet_type = lidar_->runParse();
+      sdk_buffer_cached_bytes_.store(lidar_->getBufferCachedSize(), std::memory_order_relaxed);
+      sdk_buffer_read_bytes_.store(lidar_->getBufferReadSize(), std::memory_order_relaxed);
     } catch (const std::exception & e) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), steady_clock_, kThrottleMs, "Error reading from the lidar: %s", e.what());
@@ -748,6 +824,7 @@ void UnitreeLidarNode::pollLoop()
 
 void UnitreeLidarNode::handleImuPacket()
 {
+  const rclcpp::Time arrival_stamp = this->now();
   // Braced: LidarImuData is a plain struct with no constructor.
   unilidar_sdk2::LidarImuData imu{};
   if (!lidar_->getImuData(imu)) {
@@ -766,8 +843,22 @@ void UnitreeLidarNode::handleImuPacket()
     return;
   }
 
-  const rclcpp::Time stamp = resolveStamp(
-    static_cast<double>(imu.info.stamp.sec) + static_cast<double>(imu.info.stamp.nsec) * 1e-9);
+  const bool kinematics_are_finite =
+    std::all_of(std::begin(imu.angular_velocity), std::end(imu.angular_velocity),
+      [](float value) {return std::isfinite(value);}) &&
+    std::all_of(std::begin(imu.linear_acceleration), std::end(imu.linear_acceleration),
+      [](float value) {return std::isfinite(value);});
+  if (!kinematics_are_finite) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), steady_clock_, kThrottleMs,
+      "Dropping an IMU sample with a non-finite angular velocity or acceleration.");
+    return;
+  }
+
+  rclcpp::Time stamp(0, 0, RCL_ROS_TIME);
+  if (!resolveStamp(imu.info.stamp, arrival_stamp, 0.0, stamp)) {
+    return;
+  }
 
   auto msg = std::make_unique<sensor_msgs::msg::Imu>();
   msg->header.stamp = stamp;
@@ -785,6 +876,15 @@ void UnitreeLidarNode::handleImuPacket()
   msg->linear_acceleration.x = imu.linear_acceleration[0];
   msg->linear_acceleration.y = imu.linear_acceleration[1];
   msg->linear_acceleration.z = imu.linear_acceleration[2];
+  std::copy(
+    params_.orientation_covariance.begin(), params_.orientation_covariance.end(),
+    msg->orientation_covariance.begin());
+  std::copy(
+    params_.angular_velocity_covariance.begin(), params_.angular_velocity_covariance.end(),
+    msg->angular_velocity_covariance.begin());
+  std::copy(
+    params_.linear_acceleration_covariance.begin(), params_.linear_acceleration_covariance.end(),
+    msg->linear_acceleration_covariance.begin());
 
   pub_imu_->publish(std::move(msg));
   imu_count_.fetch_add(1, std::memory_order_relaxed);
@@ -812,16 +912,150 @@ void UnitreeLidarNode::handleImuPacket()
 
 void UnitreeLidarNode::handlePointCloudPacket()
 {
-  // Reuses the scratch cloud's capacity instead of allocating a fresh vector for
-  // every scan.
+  const rclcpp::Time arrival_stamp = this->now();
+  const unilidar_sdk2::LidarPointDataPacket & packet = lidar_->getLidarPointDataPacket();
+  const unilidar_sdk2::LidarPointData & data = packet.data;
+
+  // The SDK is configured for one scan line, keeping this copy small and making
+  // the driver's accumulator the source of truth for timing and ring metadata.
   if (!lidar_->getPointCloud(cloud_scratch_)) {
     return;
   }
 
-  const size_t num_points = cloud_scratch_.points.size();
+  sensor_packet_loss_up_.store(data.state.packet_lost_up, std::memory_order_relaxed);
+  sensor_packet_loss_down_.store(data.state.packet_lost_down, std::memory_order_relaxed);
+  last_point_sequence_reported_.store(data.info.seq, std::memory_order_relaxed);
+
+  if (have_point_sequence_) {
+    const uint32_t expected = last_point_sequence_ + 1u;
+    if (data.info.seq != expected) {
+      bool out_of_order = false;
+      const uint32_t missing = missingPacketCount(expected, data.info.seq, out_of_order);
+      if (out_of_order) {
+        out_of_order_packet_count_.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        point_packet_gap_count_.fetch_add(missing, std::memory_order_relaxed);
+      }
+      if (accumulated_scan_lines_ > 0) {
+        dropped_partial_cloud_count_.fetch_add(1, std::memory_order_relaxed);
+        resetCloudAccumulator();
+      }
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), steady_clock_, kThrottleMs,
+        "Point packet sequence discontinuity: expected %" PRIu32 ", received %" PRIu32
+        ". The partial cloud was discarded.",
+        expected, data.info.seq);
+      // A forward gap starts a new, internally consistent cloud at the current
+      // packet. A duplicate or late packet must not become that new cloud's
+      // first line: cloud_scan_num=1 would otherwise publish stale geometry.
+      if (out_of_order) {
+        return;
+      }
+    }
+  }
+  have_point_sequence_ = true;
+  last_point_sequence_ = data.info.seq;
+
+  // appendOnePointCloud() in the opaque archive leaves its first aggregate stamp
+  // at zero and converts epoch time into float point offsets. Drain and discard
+  // that one SDK warm-up line before accepting any mapping data.
+  if (!sdk_cloud_warmed_up_) {
+    sdk_cloud_warmed_up_ = true;
+    warmup_cloud_drop_count_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+
+  if (!validPointCloudMetadata(data)) {
+    invalid_point_packet_count_.fetch_add(1, std::memory_order_relaxed);
+    if (accumulated_scan_lines_ > 0) {
+      dropped_partial_cloud_count_.fetch_add(1, std::memory_order_relaxed);
+      resetCloudAccumulator();
+    }
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), steady_clock_, kThrottleMs,
+      "Dropping a 3D scan line with invalid timing, angle, range, or calibration metadata.");
+    return;
+  }
+
+  rclcpp::Time line_stamp(0, 0, RCL_ROS_TIME);
+  if (!resolveStamp(data.info.stamp, arrival_stamp, data.scan_period, line_stamp)) {
+    if (accumulated_scan_lines_ > 0) {
+      dropped_partial_cloud_count_.fetch_add(1, std::memory_order_relaxed);
+      resetCloudAccumulator();
+    }
+    return;
+  }
+
+  int64_t line_offset_ns = 0;
+  if (accumulated_scan_lines_ == 0) {
+    accumulated_cloud_start_ns_ = line_stamp.nanoseconds();
+    const size_t worst_case_points = static_cast<size_t>(params_.cloud_scan_num) * 300u;
+    if (accumulated_points_.capacity() < worst_case_points) {
+      accumulated_points_.reserve(worst_case_points);
+    }
+  } else {
+    line_offset_ns = line_stamp.nanoseconds() - accumulated_cloud_start_ns_;
+    if (line_stamp.nanoseconds() < last_accumulated_line_stamp_ns_) {
+      timestamp_error_count_.fetch_add(1, std::memory_order_relaxed);
+      dropped_partial_cloud_count_.fetch_add(1, std::memory_order_relaxed);
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), steady_clock_, kThrottleMs,
+        "Point timestamp moved backwards inside an accumulated cloud; restarting the cloud.");
+      resetCloudAccumulator();
+      accumulated_cloud_start_ns_ = line_stamp.nanoseconds();
+      line_offset_ns = 0;
+    }
+  }
+  last_accumulated_line_stamp_ns_ = line_stamp.nanoseconds();
+
+  const float line_offset_seconds = static_cast<float>(line_offset_ns * 1e-9);
+  const uint32_t ring = static_cast<uint32_t>(accumulated_scan_lines_);
+  uint64_t invalid_points = 0;
+  for (unilidar_sdk2::PointUnitree point : cloud_scratch_.points) {
+    const double adjusted_time = static_cast<double>(point.time) + line_offset_seconds;
+    if (!validPoint(point) || !std::isfinite(adjusted_time) || adjusted_time < 0.0 ||
+      adjusted_time > std::numeric_limits<float>::max())
+    {
+      ++invalid_points;
+      continue;
+    }
+    point.ring = ring;
+    point.time = static_cast<float>(adjusted_time);
+    accumulated_points_.push_back(point);
+  }
+  invalid_point_count_.fetch_add(invalid_points, std::memory_order_relaxed);
+  ++accumulated_scan_lines_;
+  accumulated_scan_lines_status_.store(accumulated_scan_lines_, std::memory_order_relaxed);
+
+  const int64_t scan_period_ns = static_cast<int64_t>(
+    std::llround(static_cast<double>(data.scan_period) * kNanosecondsPerSecond));
+  const int64_t cloud_end_stamp_ns = line_stamp.nanoseconds() + scan_period_ns;
+  if (accumulated_scan_lines_ >= static_cast<size_t>(params_.cloud_scan_num)) {
+    publishAccumulatedCloud(cloud_end_stamp_ns);
+    resetCloudAccumulator();
+  }
+}
+
+void UnitreeLidarNode::resetCloudAccumulator()
+{
+  accumulated_points_.clear();
+  accumulated_scan_lines_ = 0;
+  accumulated_cloud_start_ns_ = 0;
+  last_accumulated_line_stamp_ns_ = 0;
+  accumulated_scan_lines_status_.store(0, std::memory_order_relaxed);
+}
+
+void UnitreeLidarNode::publishAccumulatedCloud(int64_t cloud_end_stamp_ns)
+{
+  if (accumulated_points_.empty()) {
+    invalid_point_packet_count_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+
+  const size_t num_points = accumulated_points_.size();
 
   auto msg = std::make_unique<sensor_msgs::msg::PointCloud2>();
-  msg->header.stamp = resolveStamp(cloud_scratch_.stamp);
+  msg->header.stamp = rclcpp::Time(accumulated_cloud_start_ns_, RCL_ROS_TIME);
   msg->header.frame_id = params_.cloud_frame;
   msg->height = 1;
   msg->width = static_cast<uint32_t>(num_points);
@@ -832,7 +1066,7 @@ void UnitreeLidarNode::handlePointCloudPacket()
   msg->is_dense = true;
   msg->data.resize(kPointStep * num_points);
 
-  packPointCloud(cloud_scratch_, msg->data.data());
+  packPoints(accumulated_points_, msg->data.data());
 
   // Moved into the publisher so an intra process subscriber - a component in the
   // same container - gets the message without another copy of the payload.
@@ -841,10 +1075,15 @@ void UnitreeLidarNode::handlePointCloudPacket()
   const int64_t published_ns = steadyNowNs();
   last_cloud_time_ns_.store(published_ns, std::memory_order_relaxed);
   last_data_time_ns_.store(published_ns, std::memory_order_relaxed);
+  last_cloud_point_count_.store(num_points, std::memory_order_relaxed);
+  last_cloud_span_ns_.store(
+    std::max<int64_t>(0, cloud_end_stamp_ns - accumulated_cloud_start_ns_),
+    std::memory_order_relaxed);
 }
 
 void UnitreeLidarNode::handleLaserScanPacket()
 {
+  const rclcpp::Time arrival_stamp = this->now();
   const unilidar_sdk2::Lidar2DPointDataPacket & packet = lidar_->getLidar2DPointDataPacket();
   const unilidar_sdk2::Lidar2DPointData & data = packet.data;
 
@@ -871,9 +1110,13 @@ void UnitreeLidarNode::handleLaserScanPacket()
     return;
   }
 
+  rclcpp::Time stamp(0, 0, RCL_ROS_TIME);
+  if (!resolveStamp(data.info.stamp, arrival_stamp, data.scan_period, stamp)) {
+    return;
+  }
+
   auto msg = std::make_unique<sensor_msgs::msg::LaserScan>();
-  msg->header.stamp = resolveStamp(
-    static_cast<double>(data.info.stamp.sec) + static_cast<double>(data.info.stamp.nsec) * 1e-9);
+  msg->header.stamp = stamp;
   msg->header.frame_id = params_.laserscan_frame;
   // The angle bias is part of the calibration, exactly as in the SDK's own 2D
   // parser; leaving it out skews the whole scan.
@@ -928,28 +1171,44 @@ void UnitreeLidarNode::reportVersionsOnce()
   versions_reported_ = true;
 }
 
-rclcpp::Time UnitreeLidarNode::resolveStamp(double sensor_stamp)
+bool UnitreeLidarNode::resolveStamp(
+  const unilidar_sdk2::TimeStamp & device_stamp,
+  const rclcpp::Time & arrival_stamp,
+  double scan_period,
+  rclcpp::Time & resolved_stamp)
 {
-  if (timestamp_source_ == TimestampSource::Ros || !(sensor_stamp > 0.0)) {
-    const rclcpp::Time now = this->now();
-    if (use_sim_time_ && now.nanoseconds() == 0) {
+  if (timestamp_mode_ == TimestampMode::Arrival) {
+    if (use_sim_time_ && arrival_stamp.nanoseconds() == 0) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), steady_clock_, kThrottleMs,
         "use_sim_time is enabled but the ROS clock still reads zero; is anything publishing "
         "/clock?");
     }
-    return now;
+    const int64_t scan_period_ns = static_cast<int64_t>(
+      std::llround(std::max(0.0, scan_period) * kNanosecondsPerSecond));
+    resolved_stamp = rclcpp::Time(
+      std::max<int64_t>(0, arrival_stamp.nanoseconds() - scan_period_ns), RCL_ROS_TIME);
+    return true;
   }
 
-  const rclcpp::Time stamp(sensorStampToNanoseconds(sensor_stamp), RCL_ROS_TIME);
-  const double offset = (this->now() - stamp).seconds();
+  if (!validPacketTimestamp(device_stamp)) {
+    timestamp_error_count_.fetch_add(1, std::memory_order_relaxed);
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), steady_clock_, kThrottleMs,
+      "Dropping sensor data with an invalid device timestamp (%" PRIu32 ".%09" PRIu32 ").",
+      device_stamp.sec, device_stamp.nsec);
+    return false;
+  }
+
+  resolved_stamp = rclcpp::Time(packetTimestampToNanoseconds(device_stamp), RCL_ROS_TIME);
+  const double offset = (arrival_stamp - resolved_stamp).seconds();
   if (std::fabs(offset) > kClockOffsetWarnSeconds) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), steady_clock_, kThrottleMs,
-      "Lidar timestamps are %.3f s away from the ROS clock. Set use_system_timestamp:=true or "
-      "timestamp_source:=ros if the lidar clock is not synchronised with this host.", offset);
+      "Lidar timestamps are %.3f s away from the ROS clock. Verify clock synchronisation or set "
+      "timestamp_mode:=arrival.", offset);
   }
-  return stamp;
+  return true;
 }
 
 void UnitreeLidarNode::checkLiveness()
@@ -991,6 +1250,13 @@ void UnitreeLidarNode::publishDiagnostics()
   const uint64_t clouds = cloud_count_.load(std::memory_order_relaxed);
   const uint64_t imu_samples = imu_count_.load(std::memory_order_relaxed);
   const uint64_t scans = laserscan_count_.load(std::memory_order_relaxed);
+  const uint64_t packet_gaps = point_packet_gap_count_.load(std::memory_order_relaxed);
+  const uint64_t out_of_order = out_of_order_packet_count_.load(std::memory_order_relaxed);
+  const uint64_t invalid_points = invalid_point_count_.load(std::memory_order_relaxed);
+  const bool new_packet_problem =
+    packet_gaps > reported_point_packet_gap_count_ ||
+    out_of_order > reported_out_of_order_packet_count_;
+  const bool new_invalid_points = invalid_points > reported_invalid_point_count_;
   const double elapsed = last_rate_report_ns_ > 0 ?
     static_cast<double>(now_ns - last_rate_report_ns_) * 1e-9 : 0.0;
   const double cloud_rate = elapsed > 0.0 ?
@@ -1022,6 +1288,12 @@ void UnitreeLidarNode::publishDiagnostics()
   } else if (!has_data) {
     status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     status.message = "Waiting for sensor data";
+  } else if (new_packet_problem) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = "Point packet loss or reordering detected";
+  } else if (new_invalid_points) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = "Invalid cloud points discarded";
   } else {
     status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
     status.message = "Streaming";
@@ -1032,6 +1304,8 @@ void UnitreeLidarNode::publishDiagnostics()
   status.values.push_back(diagnosticValue(
     "endpoint", params_.connection == ConnectionType::Serial ? params_.serial_port :
     params_.lidar_ip + ":" + std::to_string(params_.lidar_port)));
+  status.values.push_back(diagnosticValue(
+    "timestamp_mode", timestamp_mode_ == TimestampMode::Device ? "device" : "arrival"));
   status.values.push_back(diagnosticValue(
     "last_packet_age_sec", formatAge(
       now_ns, last_packet_time_ns_.load(std::memory_order_relaxed))));
@@ -1050,6 +1324,45 @@ void UnitreeLidarNode::publishDiagnostics()
   status.values.push_back(diagnosticValue("imu_rate_hz", formatRate(imu_rate)));
   status.values.push_back(diagnosticValue("scan_count", std::to_string(scans)));
   status.values.push_back(diagnosticValue("scan_rate_hz", formatRate(scan_rate)));
+  status.values.push_back(diagnosticValue(
+    "last_cloud_point_count",
+    std::to_string(last_cloud_point_count_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "last_cloud_span_sec",
+    formatSeconds(
+      static_cast<double>(last_cloud_span_ns_.load(std::memory_order_relaxed)) * 1e-9)));
+  status.values.push_back(diagnosticValue(
+    "accumulated_scan_lines",
+    std::to_string(accumulated_scan_lines_status_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "last_point_sequence",
+    std::to_string(last_point_sequence_reported_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue("missing_point_packets", std::to_string(packet_gaps)));
+  status.values.push_back(diagnosticValue(
+    "out_of_order_point_packets", std::to_string(out_of_order)));
+  status.values.push_back(diagnosticValue(
+    "dropped_partial_clouds",
+    std::to_string(dropped_partial_cloud_count_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "invalid_point_packets",
+    std::to_string(invalid_point_packet_count_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue("invalid_points", std::to_string(invalid_points)));
+  status.values.push_back(diagnosticValue(
+    "timestamp_errors", std::to_string(timestamp_error_count_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "warmup_clouds_dropped",
+    std::to_string(warmup_cloud_drop_count_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "sensor_packet_loss_up", formatRate(sensor_packet_loss_up_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "sensor_packet_loss_down",
+    formatRate(sensor_packet_loss_down_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "sdk_buffer_cached_bytes",
+    std::to_string(sdk_buffer_cached_bytes_.load(std::memory_order_relaxed))));
+  status.values.push_back(diagnosticValue(
+    "sdk_buffer_read_bytes",
+    std::to_string(sdk_buffer_read_bytes_.load(std::memory_order_relaxed))));
 
   diagnostic_msgs::msg::DiagnosticArray message;
   message.header.stamp = this->now();
@@ -1063,6 +1376,9 @@ void UnitreeLidarNode::publishDiagnostics()
   reported_cloud_count_ = clouds;
   reported_imu_count_ = imu_samples;
   reported_laserscan_count_ = scans;
+  reported_point_packet_gap_count_ = packet_gaps;
+  reported_out_of_order_packet_count_ = out_of_order;
+  reported_invalid_point_count_ = invalid_points;
 }
 
 }  // namespace unitree_lidar_ros2

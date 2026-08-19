@@ -21,6 +21,24 @@ namespace unitree_lidar_ros2
 /// Smallest quaternion norm still considered usable.
 constexpr double kMinQuaternionNorm = 1e-6;
 
+/// Number of nanoseconds in one second, shared by the exact packet-stamp helpers.
+constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
+
+/// True when a timestamp received from the lidar can be represented as ROS time.
+inline bool validPacketTimestamp(const unilidar_sdk2::TimeStamp & stamp)
+{
+  return stamp.sec > 0u && stamp.nsec < static_cast<uint32_t>(kNanosecondsPerSecond);
+}
+
+/**
+ * @brief Converts the lidar's integer seconds/nanoseconds timestamp without a
+ *        precision-losing intermediate `double`.
+ */
+inline int64_t packetTimestampToNanoseconds(const unilidar_sdk2::TimeStamp & stamp)
+{
+  return static_cast<int64_t>(stamp.sec) * kNanosecondsPerSecond + stamp.nsec;
+}
+
 /**
  * @brief Converts a Unix timestamp in seconds to nanoseconds.
  *
@@ -94,6 +112,48 @@ inline bool normalizeOrientation(const float quaternion[4], Orientation & out)
 inline size_t clampPointCount(uint32_t point_num, size_t capacity)
 {
   return std::min<size_t>(point_num, capacity);
+}
+
+/// True when the metadata and calibration needed for a 3D scan line are usable.
+inline bool validPointCloudMetadata(const unilidar_sdk2::LidarPointData & data)
+{
+  const auto & calibration = data.param;
+  const bool packet_range_valid =
+    (data.range_min == 0.0f && data.range_max == 0.0f) ||
+    (std::isfinite(data.range_min) && std::isfinite(data.range_max) &&
+    data.range_max > data.range_min);
+
+  return std::isfinite(data.com_horizontal_angle_start) &&
+         std::isfinite(data.com_horizontal_angle_step) &&
+         std::isfinite(data.scan_period) && data.scan_period >= 0.0f &&
+         packet_range_valid &&
+         std::isfinite(data.angle_min) && std::isfinite(data.angle_increment) &&
+         std::isfinite(data.time_increment) && data.time_increment >= 0.0f &&
+         std::isfinite(calibration.a_axis_dist) &&
+         std::isfinite(calibration.b_axis_dist) &&
+         std::isfinite(calibration.theta_angle_bias) &&
+         std::isfinite(calibration.alpha_angle_bias) &&
+         std::isfinite(calibration.beta_angle) &&
+         std::isfinite(calibration.xi_angle) &&
+         std::isfinite(calibration.range_bias) &&
+         std::isfinite(calibration.range_scale) && calibration.range_scale > 0.0f;
+}
+
+/// True when a converted SDK point is safe to advertise in a dense cloud.
+inline bool validPoint(const unilidar_sdk2::PointUnitree & point)
+{
+  return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
+         std::isfinite(point.intensity) && std::isfinite(point.time) && point.time >= 0.0f;
+}
+
+/// Classifies a sequence mismatch. A small unsigned delta is forward loss; a
+/// large one is a duplicate or out-of-order packet. Wrap from UINT32_MAX to zero
+/// naturally has a delta of zero.
+inline uint32_t missingPacketCount(uint32_t expected, uint32_t actual, bool & out_of_order)
+{
+  const uint32_t delta = actual - expected;
+  out_of_order = delta >= 0x80000000u;
+  return out_of_order ? 0u : delta;
 }
 
 /// Range window applied to a 2D scan, in metres.

@@ -186,3 +186,28 @@ Prepares the SDK and the ROS 2 driver for ROS 2 Jazzy and Lyrical.
 ### Tests
 - 41 cases cover pure conversions, protocol/reference parsers, UDP publication,
   diagnostics and a real 4 Mbaud SDK serial open against a pseudo-terminal.
+
+## v2.0.13 (2026.08.19)
+
+### Mapping accuracy and timing
+- The ROS 2 driver now accumulates individual scan lines itself, assigns a
+  zero-based ring to each line, preserves each return's offset from the cloud
+  header, and discards partial clouds across packet gaps, reordering or clock
+  regression.
+- `timestamp_mode: device|arrival` provides one clock policy for clouds, IMU and
+  LaserScan messages. Device packet timestamps retain integer nanosecond
+  precision; arrival timestamps are corrected to the scan start. The legacy
+  timestamp parameters remain accepted for compatibility.
+- Device-clock synchronization is available at startup, malformed warmup data
+  and non-finite returns are rejected, and configurable IMU covariance matrices
+  replace implicit certainty.
+- Raw IMU world transforms now default off so localization owns the dynamic
+  world/odom transform tree.
+
+### Observability and tests
+- Diagnostics expose packet gaps and reordering, discarded partial clouds,
+  invalid packets and points, current aggregate state, cloud duration, SDK
+  buffer occupancy and device-reported loss counters.
+- 53 cases cover point layout and rings, exact packet timestamps, metadata and
+  point validation, sequence-gap recovery, both timestamp modes, reference
+  parsers, UDP publication, diagnostics and the 4 Mbaud serial smoke path.

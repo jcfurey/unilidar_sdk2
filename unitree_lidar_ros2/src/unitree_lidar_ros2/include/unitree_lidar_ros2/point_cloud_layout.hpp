@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "unitree_lidar_sdk.h"  // NOLINT(build/include_subdir)
 
@@ -72,9 +73,9 @@ constexpr bool kIsBigEndian = false;
  * @param cloud Cloud as handed over by the SDK.
  * @param dst   Destination buffer, at least cloud.points.size() * kPointStep bytes.
  */
-inline void packPointCloud(const unilidar_sdk2::PointCloudUnitree & cloud, uint8_t * dst)
+inline void packPoints(const std::vector<unilidar_sdk2::PointUnitree> & points, uint8_t * dst)
 {
-  for (const unilidar_sdk2::PointUnitree & point : cloud.points) {
+  for (const unilidar_sdk2::PointUnitree & point : points) {
     PackedPoint packed{};
     packed.x = point.x;
     packed.y = point.y;
@@ -90,6 +91,11 @@ inline void packPointCloud(const unilidar_sdk2::PointCloudUnitree & cloud, uint8
     std::memcpy(dst, &packed, sizeof(packed));
     dst += sizeof(packed);
   }
+}
+
+inline void packPointCloud(const unilidar_sdk2::PointCloudUnitree & cloud, uint8_t * dst)
+{
+  packPoints(cloud.points, dst);
 }
 
 }  // namespace unitree_lidar_ros2

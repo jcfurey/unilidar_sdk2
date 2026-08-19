@@ -16,10 +16,14 @@ using unitree_lidar_ros2::RangeWindow;
 using unitree_lidar_ros2::clampPointCount;
 using unitree_lidar_ros2::convertScanRange;
 using unitree_lidar_ros2::normalizeOrientation;
+using unitree_lidar_ros2::packetTimestampToNanoseconds;
 using unitree_lidar_ros2::resolveRangeWindow;
 using unitree_lidar_ros2::scanAngleMax;
 using unitree_lidar_ros2::sensorStampToNanoseconds;
 using unitree_lidar_ros2::validLaserScanMetadata;
+using unitree_lidar_ros2::validPacketTimestamp;
+using unitree_lidar_ros2::validPoint;
+using unitree_lidar_ros2::validPointCloudMetadata;
 
 constexpr float kInfinity = std::numeric_limits<float>::infinity();
 }  // namespace
@@ -64,6 +68,19 @@ TEST(SensorStamp, RoundsRatherThanTruncatesTheFraction)
 TEST(SensorStamp, IsMonotonicAcrossASecondBoundary)
 {
   EXPECT_LT(sensorStampToNanoseconds(1730191291.999), sensorStampToNanoseconds(1730191292.001));
+}
+
+TEST(PacketStamp, PreservesIntegerNanosecondsExactly)
+{
+  const unilidar_sdk2::TimeStamp stamp{1730191291u, 4411172u};
+  EXPECT_TRUE(validPacketTimestamp(stamp));
+  EXPECT_EQ(packetTimestampToNanoseconds(stamp), 1730191291004411172LL);
+}
+
+TEST(PacketStamp, RejectsUnsetAndMalformedValues)
+{
+  EXPECT_FALSE(validPacketTimestamp(unilidar_sdk2::TimeStamp{0u, 0u}));
+  EXPECT_FALSE(validPacketTimestamp(unilidar_sdk2::TimeStamp{1u, 1000000000u}));
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +160,54 @@ TEST(ClampPointCount, ClampsToTheIndexedCapacity)
   EXPECT_EQ(clampPointCount(1801, 1800), 1800u);
   EXPECT_EQ(clampPointCount(0xFFFFFFFFu, 1800), 1800u);
   EXPECT_EQ(clampPointCount(0xFFFFFFFFu, 300), 300u);
+}
+
+TEST(PointCloudMetadata, RejectsNonFiniteOrUnusableCalibration)
+{
+  unilidar_sdk2::LidarPointData data{};
+  data.range_min = 0.1f;
+  data.range_max = 100.0f;
+  data.scan_period = 0.01f;
+  data.time_increment = 0.00001f;
+  data.param.range_scale = 0.001f;
+  EXPECT_TRUE(validPointCloudMetadata(data));
+
+  data.param.range_scale = 0.0f;
+  EXPECT_FALSE(validPointCloudMetadata(data));
+  data.param.range_scale = 0.001f;
+  data.param.beta_angle = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_FALSE(validPointCloudMetadata(data));
+}
+
+TEST(PointCloudMetadata, AcceptsAnUnspecifiedPacketRangeWindow)
+{
+  unilidar_sdk2::LidarPointData data{};
+  data.scan_period = 0.01f;
+  data.time_increment = 0.00001f;
+  data.param.range_scale = 0.001f;
+  EXPECT_TRUE(validPointCloudMetadata(data));
+}
+
+TEST(PointValidation, RejectsNonFiniteCoordinatesAndTimes)
+{
+  unilidar_sdk2::PointUnitree point{};
+  EXPECT_TRUE(validPoint(point));
+  point.x = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_FALSE(validPoint(point));
+  point.x = 0.0f;
+  point.time = -0.001f;
+  EXPECT_FALSE(validPoint(point));
+}
+
+TEST(PacketSequence, DistinguishesLossFromReorderingAndWrap)
+{
+  bool out_of_order = false;
+  EXPECT_EQ(unitree_lidar_ros2::missingPacketCount(11u, 14u, out_of_order), 3u);
+  EXPECT_FALSE(out_of_order);
+  EXPECT_EQ(unitree_lidar_ros2::missingPacketCount(14u, 13u, out_of_order), 0u);
+  EXPECT_TRUE(out_of_order);
+  EXPECT_EQ(unitree_lidar_ros2::missingPacketCount(0u, 0u, out_of_order), 0u);
+  EXPECT_FALSE(out_of_order);
 }
 
 // ---------------------------------------------------------------------------

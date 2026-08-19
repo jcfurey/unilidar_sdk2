@@ -42,17 +42,24 @@
 
     # --- Data -------------------------------------------------------------
     # Scan lines accumulated into one published cloud (accepted range 1..1000).
+    # The wire format contains at most 300 points/line, so the upper bound could
+    # produce a 300,000-point / 9.6 MB cloud with substantial latency and motion
+    # distortion. Use the fewest lines your mapping frontend needs.
     cloud_scan_num: 18
     # Returns outside this window, in metres, are dropped.
     range_min: 0.0
     range_max: 100.0
 
     # --- Time -------------------------------------------------------------
-    # Stamp clouds with this host's clock rather than the lidar's own clock.
-    use_system_timestamp: true
-    # "sensor" publishes the stamp carried by the data, "ros" stamps messages
-    # from the node clock on reception. Forced to "ros" under use_sim_time.
-    timestamp_source: "sensor"
+    # "device" uses the exact integer clock in every cloud/IMU/scan packet.
+    # "arrival" uses the ROS clock as each packet is parsed while keeping cloud
+    # headers at scan start and point time relative to that header. use_sim_time
+    # forces arrival mode. Device mode gives the best deskew when clocks agree.
+    timestamp_mode: "device"
+    # Synchronise the device clock to host CLOCK_REALTIME once during startup.
+    sync_sensor_clock_on_startup: true
+    # Deprecated compatibility parameters are available through
+    # timestamp_mode: "auto": use_system_timestamp and timestamp_source.
 
     # --- Topics and frames ------------------------------------------------
     cloud_topic: "unilidar/cloud"
@@ -66,8 +73,9 @@
     laserscan_frame: "unilidar_laserscan"
 
     # --- Transforms -------------------------------------------------------
-    # Broadcast <imu_frame>_initial -> <imu_frame> from the IMU orientation.
-    publish_imu_tf: true
+    # Broadcast <imu_frame>_initial -> <imu_frame> from raw IMU orientation.
+    # Normally false: localization/state estimation should own dynamic world TF.
+    publish_imu_tf: false
     # Broadcast the static <imu_frame> -> <cloud_frame> mounting offset once,
     # on a latched topic.
     publish_static_tf: true
@@ -76,6 +84,13 @@
     # Rotation from the IMU frame to the cloud frame as [x, y, z, w]. Robot
     # mounting transforms belong in URDF, outside this sensor-internal transform.
     imu_to_lidar_rotation: [0.0, 0.0, 0.0, 1.0]
+
+    # Row-major 3x3 IMU covariances. All zeros follow sensor_msgs/Imu's
+    # "covariance unknown" convention; replace them with calibrated values for
+    # an estimator that consumes this IMU.
+    orientation_covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    angular_velocity_covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    linear_acceleration_covariance: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     # --- Lifecycle --------------------------------------------------------
     # Needed when the lidar is configured to power up in standby (work_mode
@@ -102,6 +117,7 @@
 
     # --- Diagnostics ------------------------------------------------------
     diagnostics_topic: "/diagnostics"
-    # Reports connection state, per-stream rates, data age and versions.
+    # Reports connection state, per-stream rates, data age, cloud size/span,
+    # sequence gaps, discarded data, SDK backlog, sensor loss and versions.
     # Set to 0 to disable diagnostic publication.
     diagnostics_period: 1.0

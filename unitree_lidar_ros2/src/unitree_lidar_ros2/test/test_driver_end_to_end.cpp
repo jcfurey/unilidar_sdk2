@@ -6,10 +6,9 @@
 // No lidar involved: the driver binds to loopback and the test plays the part of
 // the sensor.
 //
-// The message stamps are taken from the node clock (timestamp_source "ros"). The
-// SDK's own cloud stamp bookkeeping does not settle from a single synthetic scan
-// line - it leaves PointCloudUnitree::stamp at zero - so asserting on it here
-// would be testing an artefact of the fixture rather than the driver.
+// The driver deliberately discards the SDK's malformed first cloud, then owns
+// scan accumulation so the tests can assert exact stamps, ring indices and
+// per-point offsets through the real pre-built archive.
 
 #include <gtest/gtest.h>
 
@@ -42,6 +41,9 @@ constexpr uint16_t kFirstLidarPort = 16101;
 class DriverFixture : public testing::Test
 {
 protected:
+  virtual int cloudScanNum() const {return 1;}
+  virtual std::string timestampMode() const {return "device";}
+
   /// Each test gets its own port pair.
   ///
   /// Not fastidiousness: the SDK cannot release a connection at all. closeUDP()
@@ -68,14 +70,25 @@ protected:
       rclcpp::Parameter("local_port", static_cast<int>(local_port_)),
       rclcpp::Parameter("lidar_ip", "localhost"),
       rclcpp::Parameter("lidar_port", static_cast<int>(lidar_port_)),
-      // One scan line per cloud, so a single packet produces a message.
-      rclcpp::Parameter("cloud_scan_num", 1),
-      rclcpp::Parameter("timestamp_source", std::string("ros")),
+      rclcpp::Parameter("cloud_scan_num", cloudScanNum()),
+      rclcpp::Parameter("timestamp_mode", timestampMode()),
+      rclcpp::Parameter("sync_sensor_clock_on_startup", false),
       rclcpp::Parameter("set_work_mode", false),
       rclcpp::Parameter("start_rotation_on_startup", false),
+      // Raw orientation TF is opt-in; this fixture enables it to verify the
+      // compatibility path while the production default remains false.
+      rclcpp::Parameter("publish_imu_tf", true),
       rclcpp::Parameter("imu_to_lidar_translation", std::vector<double>{0.5, -0.25, 0.125}),
       rclcpp::Parameter(
         "imu_to_lidar_rotation", std::vector<double>{0.0, 0.0, 0.70710678, 0.70710678}),
+      rclcpp::Parameter(
+        "orientation_covariance", std::vector<double>{0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1}),
+      rclcpp::Parameter(
+        "angular_velocity_covariance",
+        std::vector<double>{0.2, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2}),
+      rclcpp::Parameter(
+        "linear_acceleration_covariance",
+        std::vector<double>{0.3, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.3}),
       rclcpp::Parameter("watchdog_timeout", 0.0),
       rclcpp::Parameter("diagnostics_period", 0.1),
     };
@@ -143,6 +156,17 @@ protected:
     return ready();
   }
 
+  /// Sends the SDK's one malformed warm-up cloud followed by the line the test
+  /// actually wants to observe.
+  bool sendPointPacketAfterWarmup(unilidar_sdk2::LidarPointDataPacket packet)
+  {
+    auto warmup = packet;
+    packet.data.info.seq += 1u;
+    packet.data.info.stamp.nsec += 1000000u;
+    return sender_->send(warmup, LIDAR_POINT_DATA_PACKET_TYPE) &&
+           sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE);
+  }
+
   uint16_t local_port_{0};
   uint16_t lidar_port_{0};
   std::shared_ptr<unitree_lidar_ros2::UnitreeLidarNode> driver_;
@@ -164,6 +188,19 @@ protected:
   std::vector<tf2_msgs::msg::TFMessage> static_tf_messages_;
 };
 
+class AccumulatingDriverFixture : public DriverFixture
+{
+protected:
+  int cloudScanNum() const override {return 3;}
+};
+
+class ArrivalTimestampDriverFixture : public DriverFixture
+{
+protected:
+  int cloudScanNum() const override {return 2;}
+  std::string timestampMode() const override {return "arrival";}
+};
+
 /// Reads a value out of a PointCloud2 payload without assuming any alignment.
 template<typename T>
 T readField(const sensor_msgs::msg::PointCloud2 & cloud, size_t point, size_t offset)
@@ -171,6 +208,17 @@ T readField(const sensor_msgs::msg::PointCloud2 & cloud, size_t point, size_t of
   T value{};
   std::memcpy(&value, cloud.data.data() + point * cloud.point_step + offset, sizeof(T));
   return value;
+}
+
+std::string diagnosticValue(
+  const diagnostic_msgs::msg::DiagnosticStatus & status, const std::string & key)
+{
+  for (const auto & value : status.values) {
+    if (value.key == key) {
+      return value.value;
+    }
+  }
+  return "";
 }
 
 }  // namespace
@@ -200,6 +248,10 @@ TEST_F(DriverFixture, PublishesImuWithTheSdkQuaternionOrder)
   EXPECT_NEAR(imu.linear_acceleration.x, 0.11, 1e-6);
   EXPECT_NEAR(imu.linear_acceleration.y, 0.22, 1e-6);
   EXPECT_NEAR(imu.linear_acceleration.z, 9.81, 1e-6);
+  EXPECT_EQ(rclcpp::Time(imu.header.stamp).nanoseconds(), 1730191291004411172LL);
+  EXPECT_DOUBLE_EQ(imu.orientation_covariance[0], 0.1);
+  EXPECT_DOUBLE_EQ(imu.angular_velocity_covariance[4], 0.2);
+  EXPECT_DOUBLE_EQ(imu.linear_acceleration_covariance[8], 0.3);
 
   ASSERT_FALSE(tf_messages_.front().transforms.empty());
   const auto & transform = tf_messages_.front().transforms.front();
@@ -218,7 +270,7 @@ TEST_F(DriverFixture, PublishesImuWithTheSdkQuaternionOrder)
 TEST_F(DriverFixture, PublishesAPclCompatiblePointCloud)
 {
   auto packet = unitree_lidar_ros2::test::makePointPacket(5);
-  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  ASSERT_TRUE(sendPointPacketAfterWarmup(packet));
 
   ASSERT_TRUE(spinUntil([this] {return !cloud_messages_.empty();})) << "no cloud arrived";
 
@@ -252,7 +304,167 @@ TEST_F(DriverFixture, PublishesAPclCompatiblePointCloud)
     EXPECT_NEAR(readField<float>(cloud, i, 8), 0.0f, 1e-6f) << "point " << i << " z";
     EXPECT_NEAR(readField<float>(cloud, i, 16), static_cast<float>(10 * (i + 1)), 1e-6f)
       << "point " << i << " intensity";
+    EXPECT_EQ(readField<uint16_t>(cloud, i, 20), 0u) << "point " << i << " ring";
+    EXPECT_NEAR(readField<float>(cloud, i, 24), static_cast<float>(i) * 1e-5f, 1e-7f)
+      << "point " << i << " relative time";
   }
+}
+
+TEST_F(DriverFixture, DropsTheSdkWarmupCloud)
+{
+  auto packet = unitree_lidar_ros2::test::makePointPacket(2);
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  EXPECT_FALSE(spinUntil([this] {return !cloud_messages_.empty();}, 1000ms));
+
+  packet.data.info.seq += 1u;
+  packet.data.info.stamp.nsec += 1000000u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  EXPECT_TRUE(spinUntil([this] {return !cloud_messages_.empty();}));
+}
+
+TEST_F(AccumulatingDriverFixture, PublishesExactScanStartRingsAndRelativeTimes)
+{
+  auto packet = unitree_lidar_ros2::test::makePointPacket(2);
+  packet.data.info.seq = 100u;
+  packet.data.info.stamp.sec = 1730191292u;
+  packet.data.info.stamp.nsec = 100000000u;
+  packet.data.scan_period = 0.01f;
+  packet.data.time_increment = 0.001f;
+
+  // Warm up the opaque SDK, then provide three contiguous scan lines.
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  for (uint32_t line = 0; line < 3; ++line) {
+    packet.data.info.seq = 101u + line;
+    packet.data.info.stamp.nsec = 110000000u + line * 10000000u;
+    ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  }
+
+  ASSERT_TRUE(spinUntil([this] {return !cloud_messages_.empty();})) << "no cloud arrived";
+  const auto & cloud = cloud_messages_.front();
+  ASSERT_EQ(cloud.width, 6u);
+  EXPECT_EQ(rclcpp::Time(cloud.header.stamp).nanoseconds(), 1730191292110000000LL);
+
+  for (size_t line = 0; line < 3; ++line) {
+    EXPECT_EQ(readField<uint16_t>(cloud, line * 2, 20), line);
+    EXPECT_EQ(readField<uint16_t>(cloud, line * 2 + 1, 20), line);
+    EXPECT_NEAR(readField<float>(cloud, line * 2, 24), line * 0.01f, 1e-6f);
+    EXPECT_NEAR(readField<float>(cloud, line * 2 + 1, 24), line * 0.01f + 0.001f, 1e-6f);
+  }
+}
+
+TEST_F(AccumulatingDriverFixture, DropsAPartialCloudAcrossASequenceGap)
+{
+  auto packet = unitree_lidar_ros2::test::makePointPacket(1);
+  packet.data.info.seq = 200u;
+  packet.data.info.stamp.nsec = 100000000u;
+  packet.data.scan_period = 0.01f;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+
+  const std::vector<uint32_t> sequences{201u, 203u, 204u, 205u};
+  for (size_t index = 0; index < sequences.size(); ++index) {
+    packet.data.info.seq = sequences[index];
+    packet.data.info.stamp.nsec = 110000000u + static_cast<uint32_t>(index) * 10000000u;
+    ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  }
+
+  ASSERT_TRUE(spinUntil([this] {return !cloud_messages_.empty();})) << "no cloud arrived";
+  ASSERT_EQ(cloud_messages_.front().width, 3u);
+  for (size_t point = 0; point < 3; ++point) {
+    EXPECT_EQ(readField<uint16_t>(cloud_messages_.front(), point, 20), point);
+  }
+
+  ASSERT_TRUE(spinUntil([this] {
+      for (const auto & message : diagnostic_messages_) {
+        if (!message.status.empty() &&
+        diagnosticValue(message.status.front(), "missing_point_packets") == "1" &&
+        diagnosticValue(message.status.front(), "dropped_partial_clouds") == "1")
+        {
+          return true;
+        }
+      }
+      return false;
+    })) << "packet gap was not reported";
+}
+
+TEST_F(DriverFixture, RejectsAnOutOfOrderLine)
+{
+  auto packet = unitree_lidar_ros2::test::makePointPacket(1);
+  packet.data.info.seq = 400u;
+  packet.data.info.stamp.nsec = 100000000u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+
+  packet.data.info.seq = 401u;
+  packet.data.info.stamp.nsec = 110000000u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  ASSERT_TRUE(spinUntil([this] {return cloud_messages_.size() == 1;}));
+
+  // A late packet is stale geometry, not the start of another cloud. This is
+  // especially important at cloud_scan_num=1, where accepting it publishes it
+  // immediately.
+  packet.data.info.seq = 400u;
+  packet.data.info.stamp.nsec = 100000000u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  EXPECT_FALSE(spinUntil([this] {return cloud_messages_.size() > 1;}, 1000ms));
+
+  packet.data.info.seq = 402u;
+  packet.data.info.stamp.nsec = 120000000u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  EXPECT_TRUE(spinUntil([this] {return cloud_messages_.size() == 2;}));
+}
+
+TEST_F(AccumulatingDriverFixture, RestartsOnAnIntraCloudTimestampRegression)
+{
+  auto packet = unitree_lidar_ros2::test::makePointPacket(1);
+  packet.data.info.seq = 500u;
+  packet.data.info.stamp.nsec = 90000000u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+
+  // The third usable line remains newer than the cloud start but is older than
+  // the preceding line. Comparing only against the cloud start would miss it
+  // and publish non-monotonic per-point times.
+  const std::vector<uint32_t> stamp_nanoseconds{
+    100000000u, 130000000u, 120000000u, 130000000u, 140000000u};
+  for (size_t index = 0; index < stamp_nanoseconds.size(); ++index) {
+    packet.data.info.seq = 501u + static_cast<uint32_t>(index);
+    packet.data.info.stamp.nsec = stamp_nanoseconds[index];
+    ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  }
+
+  ASSERT_TRUE(spinUntil([this] {return !cloud_messages_.empty();})) << "no cloud arrived";
+  const auto & cloud = cloud_messages_.front();
+  EXPECT_EQ(rclcpp::Time(cloud.header.stamp).nanoseconds(), 1730191292120000000LL);
+  ASSERT_EQ(cloud.width, 3u);
+  EXPECT_NEAR(readField<float>(cloud, 0, 24), 0.0f, 1e-6f);
+  EXPECT_NEAR(readField<float>(cloud, 1, 24), 0.01f, 1e-6f);
+  EXPECT_NEAR(readField<float>(cloud, 2, 24), 0.02f, 1e-6f);
+}
+
+TEST_F(ArrivalTimestampDriverFixture, KeepsPointOffsetsRelativeToTheArrivalBasedHeader)
+{
+  auto packet = unitree_lidar_ros2::test::makePointPacket(2);
+  packet.data.scan_period = 0.01f;
+  packet.data.time_increment = 0.001f;
+  packet.data.info.seq = 300u;
+  const rclcpp::Time before = driver_->now();
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  packet.data.info.seq = 301u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  packet.data.info.seq = 302u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+
+  ASSERT_TRUE(spinUntil([this] {return !cloud_messages_.empty();})) << "no cloud arrived";
+  const rclcpp::Time after = driver_->now();
+  const auto & cloud = cloud_messages_.front();
+  ASSERT_EQ(cloud.width, 4u);
+  const rclcpp::Time header(cloud.header.stamp);
+  EXPECT_GE(header.nanoseconds(), before.nanoseconds() - 100000000LL);
+  EXPECT_LE(header.nanoseconds(), after.nanoseconds());
+
+  const float final_offset = readField<float>(cloud, 3, 24);
+  EXPECT_GE(final_offset, 0.001f);
+  EXPECT_LE(
+    header.nanoseconds() + static_cast<int64_t>(final_offset * 1e9f),
+    after.nanoseconds() + 100000000LL);
 }
 
 TEST_F(DriverFixture, PublishesStandardDiagnosticsForValidData)
@@ -313,7 +525,7 @@ TEST_F(DriverFixture, SurvivesAPacketWithAnOversizedPointCount)
 {
   auto packet = unitree_lidar_ros2::test::makePointPacket(300);
   packet.data.point_num = 0xFFFFFFFFu;
-  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  ASSERT_TRUE(sendPointPacketAfterWarmup(packet));
 
   // Either a bounded cloud or nothing at all is acceptable; a crash is not.
   spinUntil([this] {return !cloud_messages_.empty();}, 3000ms);

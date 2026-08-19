@@ -46,15 +46,14 @@ enum class ConnectionType : int
   Udp = 2,
 };
 
-/// Which clock the published stamps come from.
-enum class TimestampSource
+/// Unified clock policy for every stream published by the driver.
+enum class TimestampMode
 {
-  /// The stamp carried by the SDK payload: the lidar's own clock, or the host
-  /// clock at packet assembly time when `use_system_timestamp` is set.
-  Sensor,
-  /// The node clock, sampled when the packet is handed to this node. This is the
-  /// only meaningful choice when `use_sim_time` is enabled.
-  Ros,
+  /// The integer seconds/nanoseconds timestamp carried by each lidar packet.
+  Device,
+  /// The node clock sampled when each packet is parsed. Scan packets are shifted
+  /// back by their scan period so the result denotes the first measurement.
+  Arrival,
 };
 
 /**
@@ -131,6 +130,9 @@ private:
     std::string local_ip{"192.168.1.2"};
 
     int cloud_scan_num{18};
+    std::string timestamp_mode{"auto"};
+    bool sync_sensor_clock_on_startup{true};
+    // Deprecated compatibility inputs used only when timestamp_mode is "auto".
     bool use_system_timestamp{true};
     std::string timestamp_source{"sensor"};
     double range_min{0.0};
@@ -143,10 +145,15 @@ private:
     std::string laserscan_frame{"unilidar_laserscan"};
     std::string laserscan_topic{"unilidar/laserscan"};
 
-    bool publish_imu_tf{true};
+    bool publish_imu_tf{false};
     bool publish_static_tf{true};
     std::vector<double> imu_to_lidar_translation{0.007698, 0.014655, -0.00667};
     std::vector<double> imu_to_lidar_rotation{0.0, 0.0, 0.0, 1.0};
+    std::vector<double> orientation_covariance{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    std::vector<double> angular_velocity_covariance{
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    std::vector<double> linear_acceleration_covariance{
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
     bool start_rotation_on_startup{true};
     bool stop_rotation_on_shutdown{false};
@@ -179,12 +186,19 @@ private:
   void checkLiveness();
   void publishDiagnostics();
 
-  /// Resolves the stamp to publish for a payload carrying @p sensor_stamp
-  /// seconds since the epoch, honouring `timestamp_source` and simulated time.
-  rclcpp::Time resolveStamp(double sensor_stamp);
+  /// Resolves the measurement-start stamp under the unified timestamp policy.
+  /// Returns false instead of silently mixing clocks when a device stamp is bad.
+  bool resolveStamp(
+    const unilidar_sdk2::TimeStamp & device_stamp,
+    const rclcpp::Time & arrival_stamp,
+    double scan_period,
+    rclcpp::Time & resolved_stamp);
+
+  void resetCloudAccumulator();
+  void publishAccumulatedCloud(int64_t cloud_end_stamp_ns);
 
   Parameters params_;
-  TimestampSource timestamp_source_{TimestampSource::Sensor};
+  TimestampMode timestamp_mode_{TimestampMode::Device};
   bool use_sim_time_{false};
 
   LidarReaderHandle lidar_;
@@ -201,11 +215,17 @@ private:
   /// Field descriptors of the published cloud, built once.
   std::vector<sensor_msgs::msg::PointField> cloud_fields_;
 
-  /// Scratch buffer reused by the poll thread so that every scan does not
-  /// reallocate its point vector. Only ever touched by pollLoop(). Braces
-  /// matter: PointCloudUnitree has no constructor, so its scalars would
-  /// otherwise start out uninitialised.
+  /// The SDK is configured to expose one scan line at a time. This scratch vector
+  /// receives that small line; the driver then owns accumulation so it can keep
+  /// timestamps, ring indices and packet gaps coherent.
   unilidar_sdk2::PointCloudUnitree cloud_scratch_{};
+  std::vector<unilidar_sdk2::PointUnitree> accumulated_points_;
+  size_t accumulated_scan_lines_{0};
+  int64_t accumulated_cloud_start_ns_{0};
+  int64_t last_accumulated_line_stamp_ns_{0};
+  bool sdk_cloud_warmed_up_{false};
+  bool have_point_sequence_{false};
+  uint32_t last_point_sequence_{0};
 
   rclcpp::Context::SharedPtr context_;
   std::thread poll_thread_;
@@ -221,6 +241,21 @@ private:
   std::atomic<uint64_t> cloud_count_{0};
   std::atomic<uint64_t> imu_count_{0};
   std::atomic<uint64_t> laserscan_count_{0};
+  std::atomic<uint64_t> point_packet_gap_count_{0};
+  std::atomic<uint64_t> out_of_order_packet_count_{0};
+  std::atomic<uint64_t> dropped_partial_cloud_count_{0};
+  std::atomic<uint64_t> invalid_point_count_{0};
+  std::atomic<uint64_t> invalid_point_packet_count_{0};
+  std::atomic<uint64_t> timestamp_error_count_{0};
+  std::atomic<uint64_t> warmup_cloud_drop_count_{0};
+  std::atomic<uint64_t> last_cloud_point_count_{0};
+  std::atomic<uint64_t> accumulated_scan_lines_status_{0};
+  std::atomic<int64_t> last_cloud_span_ns_{0};
+  std::atomic<uint64_t> sdk_buffer_cached_bytes_{0};
+  std::atomic<uint64_t> sdk_buffer_read_bytes_{0};
+  std::atomic<uint32_t> last_point_sequence_reported_{0};
+  std::atomic<float> sensor_packet_loss_up_{0.0f};
+  std::atomic<float> sensor_packet_loss_down_{0.0f};
 
   /// Snapshot of the counters above at the previous watchdog tick, used to report
   /// message rates. Only touched by the watchdog callback.
@@ -228,6 +263,9 @@ private:
   uint64_t reported_cloud_count_{0};
   uint64_t reported_imu_count_{0};
   uint64_t reported_laserscan_count_{0};
+  uint64_t reported_point_packet_gap_count_{0};
+  uint64_t reported_out_of_order_packet_count_{0};
+  uint64_t reported_invalid_point_count_{0};
 
   std::mutex version_mutex_;
   std::string firmware_version_;
