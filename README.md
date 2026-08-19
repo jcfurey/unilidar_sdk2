@@ -271,14 +271,14 @@ Every parameter is documented in that file, and at run time with:
 ros2 param describe /unitree_lidar_ros2_node <parameter>
 ```
 
-For mapping, the ROS 2 driver defaults to one unified device clock for point
-clouds, per-point offsets, IMU and LaserScan, and synchronises that clock to the
-host at startup. It owns multi-line accumulation instead of trusting the opaque
-SDK aggregate: the malformed SDK warm-up cloud is discarded, rings are assigned
-as zero-based scan-line indices, and a sequence gap discards the partial cloud.
-Use `timestamp_mode: arrival` only when device time cannot be synchronised; that
-mode preserves scan-start header semantics but necessarily includes transport
-and scheduling jitter.
+For mapping, the ROS 2 driver uses one clock policy for point clouds, per-point
+offsets, IMU and LaserScan. It owns multi-line accumulation instead of trusting
+the opaque SDK aggregate: the malformed SDK warm-up cloud is discarded, rings
+are assigned as zero-based scan-line indices, and a sequence gap discards the
+partial cloud. The shipped configuration uses `timestamp_mode: arrival` because
+firmware 2.8.11.1 has been observed advancing packet time at half the host-clock
+rate even after synchronization. Device mode remains available after its rate
+and offset have been verified on the installed firmware.
 
 The driver publishes per-point time but does not deskew. A mapping frontend must
 perform motion compensation with synchronised IMU/odometry, especially when

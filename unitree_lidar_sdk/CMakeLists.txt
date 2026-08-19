@@ -10,7 +10,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(unitree_lidar_sdk
-  VERSION 2.0.13
+  VERSION 2.0.14
   DESCRIPTION "Unitree LiDAR L2 SDK"
   LANGUAGES CXX
 )

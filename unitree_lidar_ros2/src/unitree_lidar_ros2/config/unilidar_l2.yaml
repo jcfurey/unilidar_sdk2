@@ -51,13 +51,12 @@
     range_max: 100.0
 
     # --- Time -------------------------------------------------------------
-    # "device" uses the exact integer clock in every cloud/IMU/scan packet.
-    # "arrival" uses the ROS clock as each packet is parsed while keeping cloud
-    # headers at scan start and point time relative to that header. use_sim_time
-    # forces arrival mode. Device mode gives the best deskew when clocks agree.
-    timestamp_mode: "device"
-    # Synchronise the device clock to host CLOCK_REALTIME once during startup.
-    sync_sensor_clock_on_startup: true
+    # Firmware 2.8.11.1 has been observed advancing packet time at half the host
+    # clock rate even after synchronization. Arrival is therefore the safe
+    # default; use device only after checking its rate and offset on the
+    # installed firmware.
+    timestamp_mode: "arrival"
+    sync_sensor_clock_on_startup: false
     # Deprecated compatibility parameters are available through
     # timestamp_mode: "auto": use_system_timestamp and timestamp_source.
 

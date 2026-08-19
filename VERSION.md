@@ -211,3 +211,17 @@ Prepares the SDK and the ROS 2 driver for ROS 2 Jazzy and Lyrical.
 - 53 cases cover point layout and rings, exact packet timestamps, metadata and
   point validation, sequence-gap recovery, both timestamp modes, reference
   parsers, UDP publication, diagnostics and the 4 Mbaud serial smoke path.
+
+## v2.0.14 (2026.08.19)
+
+### Hardware validation
+- Point-packet sequence tracking now follows the L2 firmware's 10-bit counter,
+  which rolls from 1023 to zero despite being exposed through a `uint32_t`.
+  Full-width counters remain supported for compatible producers.
+- Arrival timestamps are the shipped mapping default after firmware 2.8.11.1
+  was measured advancing packet time at half the host-clock rate even after a
+  synchronization command. Device mode remains available for firmware whose
+  clock rate and offset have been verified.
+- Bench configuration covariance matrices contain all nine required elements.
+- 55 cases include hardware-counter wrap accumulation and modular packet-gap
+  classification in addition to the v2.0.13 coverage.

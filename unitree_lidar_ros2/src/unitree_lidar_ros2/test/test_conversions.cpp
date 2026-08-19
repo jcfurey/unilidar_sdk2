@@ -210,6 +210,28 @@ TEST(PacketSequence, DistinguishesLossFromReorderingAndWrap)
   EXPECT_FALSE(out_of_order);
 }
 
+TEST(PacketSequence, HandlesTheL2TenBitHardwareCounter)
+{
+  bool out_of_order = true;
+  EXPECT_EQ(
+    unitree_lidar_ros2::missingPacketCount(
+      0u, 0u, out_of_order, unitree_lidar_ros2::kPointPacketSequenceModulus),
+    0u);
+  EXPECT_FALSE(out_of_order);
+
+  EXPECT_EQ(
+    unitree_lidar_ros2::missingPacketCount(
+      0u, 2u, out_of_order, unitree_lidar_ros2::kPointPacketSequenceModulus),
+    2u);
+  EXPECT_FALSE(out_of_order);
+
+  EXPECT_EQ(
+    unitree_lidar_ros2::missingPacketCount(
+      100u, 99u, out_of_order, unitree_lidar_ros2::kPointPacketSequenceModulus),
+    0u);
+  EXPECT_TRUE(out_of_order);
+}
+
 // ---------------------------------------------------------------------------
 // 2D scan ranges
 // ---------------------------------------------------------------------------

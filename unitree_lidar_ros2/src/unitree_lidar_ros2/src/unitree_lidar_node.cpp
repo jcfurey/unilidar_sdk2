@@ -927,10 +927,18 @@ void UnitreeLidarNode::handlePointCloudPacket()
   last_point_sequence_reported_.store(data.info.seq, std::memory_order_relaxed);
 
   if (have_point_sequence_) {
-    const uint32_t expected = last_point_sequence_ + 1u;
+    // Although DataInfo::seq is a uint32, L2 firmware uses only 10 bits for
+    // point packets. Retain full-width behavior for synthetic/newer producers
+    // that emit values outside the hardware range.
+    const uint32_t sequence_modulus =
+      last_point_sequence_ < kPointPacketSequenceModulus &&
+      data.info.seq < kPointPacketSequenceModulus ? kPointPacketSequenceModulus : 0u;
+    const uint32_t expected = sequence_modulus == 0u ?
+      last_point_sequence_ + 1u : (last_point_sequence_ + 1u) % sequence_modulus;
     if (data.info.seq != expected) {
       bool out_of_order = false;
-      const uint32_t missing = missingPacketCount(expected, data.info.seq, out_of_order);
+      const uint32_t missing = missingPacketCount(
+        expected, data.info.seq, out_of_order, sequence_modulus);
       if (out_of_order) {
         out_of_order_packet_count_.fetch_add(1, std::memory_order_relaxed);
       } else {

@@ -24,6 +24,10 @@ constexpr double kMinQuaternionNorm = 1e-6;
 /// Number of nanoseconds in one second, shared by the exact packet-stamp helpers.
 constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
 
+/// The L2 firmware exposes the point-packet sequence as a uint32, but the
+/// hardware counter itself is 10 bit and rolls from 1023 back to zero.
+constexpr uint32_t kPointPacketSequenceModulus = 1024u;
+
 /// True when a timestamp received from the lidar can be represented as ROS time.
 inline bool validPacketTimestamp(const unilidar_sdk2::TimeStamp & stamp)
 {
@@ -149,10 +153,13 @@ inline bool validPoint(const unilidar_sdk2::PointUnitree & point)
 /// Classifies a sequence mismatch. A small unsigned delta is forward loss; a
 /// large one is a duplicate or out-of-order packet. Wrap from UINT32_MAX to zero
 /// naturally has a delta of zero.
-inline uint32_t missingPacketCount(uint32_t expected, uint32_t actual, bool & out_of_order)
+inline uint32_t missingPacketCount(
+  uint32_t expected, uint32_t actual, bool & out_of_order, uint32_t modulus = 0u)
 {
-  const uint32_t delta = actual - expected;
-  out_of_order = delta >= 0x80000000u;
+  const uint32_t delta = modulus == 0u ?
+    actual - expected : (actual + modulus - expected) % modulus;
+  const uint32_t backward_threshold = modulus == 0u ? 0x80000000u : modulus / 2u;
+  out_of_order = delta >= backward_threshold;
   return out_of_order ? 0u : delta;
 }
 

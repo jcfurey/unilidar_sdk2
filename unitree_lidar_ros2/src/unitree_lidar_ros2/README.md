@@ -79,16 +79,21 @@ pass by intra-process delivery rather than being serialised over loopback
 
 ### Timestamps and mapping
 
-`timestamp_mode: device` is the mapping default. Cloud, IMU and LaserScan use the
-integer seconds/nanoseconds clock carried by their packets, and the driver asks
-the lidar to synchronise that clock to the host once at startup. This keeps
-cloud headers, IMU samples and every point's relative `time` in one clock domain.
+`timestamp_mode: arrival` is the shipped mapping default because firmware
+2.8.11.1 has been observed advancing its packet clock at half the host-clock
+rate even after synchronization. Cloud, IMU and LaserScan therefore share the
+node clock by default.
 
-`timestamp_mode: arrival` instead samples the node clock per packet. Cloud and
-LaserScan stamps are shifted back by their scan period so their headers still
-denote the first measurement, and accumulated point offsets remain relative to
-the cloud header. Arrival mode avoids an unsynchronised device clock but includes
-transport and scheduling jitter. `use_sim_time` forces this mode.
+Arrival mode samples the node clock per packet. Cloud and LaserScan stamps are
+shifted back by their scan period so their headers still denote the first
+measurement, and accumulated point offsets remain relative to the cloud header.
+It avoids an unsynchronised device clock but includes transport and scheduling
+jitter. `use_sim_time` forces this mode.
+
+`timestamp_mode: device` preserves the integer seconds/nanoseconds carried by
+each packet and can be preferable after the firmware's clock rate and offset
+have been verified. Startup synchronization corrects offset once; it cannot
+correct a clock-rate error.
 
 The old `use_system_timestamp` and `timestamp_source` parameters remain available
 through `timestamp_mode: auto`, but are deprecated.

@@ -352,6 +352,24 @@ TEST_F(AccumulatingDriverFixture, PublishesExactScanStartRingsAndRelativeTimes)
   }
 }
 
+TEST_F(AccumulatingDriverFixture, AccumulatesAcrossTheHardwareSequenceWrap)
+{
+  auto packet = unitree_lidar_ros2::test::makePointPacket(1);
+  packet.data.info.seq = 1022u;
+  packet.data.info.stamp.nsec = 100000000u;
+  ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+
+  const std::vector<uint32_t> sequences{1023u, 0u, 1u};
+  for (size_t index = 0; index < sequences.size(); ++index) {
+    packet.data.info.seq = sequences[index];
+    packet.data.info.stamp.nsec = 110000000u + static_cast<uint32_t>(index) * 10000000u;
+    ASSERT_TRUE(sender_->send(packet, LIDAR_POINT_DATA_PACKET_TYPE));
+  }
+
+  ASSERT_TRUE(spinUntil([this] {return !cloud_messages_.empty();})) << "no cloud arrived";
+  EXPECT_EQ(cloud_messages_.front().width, 3u);
+}
+
 TEST_F(AccumulatingDriverFixture, DropsAPartialCloudAcrossASequenceGap)
 {
   auto packet = unitree_lidar_ros2::test::makePointPacket(1);
